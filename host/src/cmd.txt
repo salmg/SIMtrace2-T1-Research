@@ -1,0 +1,1 @@
+sudo simtrace2-remsim --usb-vendor 1d50 --usb-product 60e3 --usb-path 1-2.2 --usb-config 1

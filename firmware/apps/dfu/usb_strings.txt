@@ -1,0 +1,6 @@
+sysmocom - s.f.m.c. GmbH
+PRODUCT_STRING
+DFU (Device Firmware Upgrade)
+RAM
+Flash (Application Partition)
+Flash (Bootloader Partition)

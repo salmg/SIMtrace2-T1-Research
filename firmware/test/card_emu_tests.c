@@ -1,0 +1,773 @@
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#include <assert.h>
+#include <stdlib.h>
+
+#include "card_emu.h"
+#include "simtrace_prot.h"
+#include "tc_etu.h"
+#include "usb_buf.h"
+
+#define PHONE_DATAIN	1
+#define PHONE_INT	2
+#define PHONE_DATAOUT	3
+
+/* libcommon/include/assert.h is found ahead of the system header and redefines
+ * assert() to the firmware's ASSERT, which spins forever instead of aborting.
+ * A failed assertion would therefore hang `make check` rather than fail it,
+ * which hides the failure and stalls anything running the suite unattended. */
+#undef assert
+#define assert(cond)							\
+	do {								\
+		if (!(cond)) {						\
+			fprintf(stderr, "%s:%d: assertion failed: %s\n",	\
+				__FILE__, __LINE__, #cond);		\
+			exit(1);					\
+		}							\
+	} while (0)
+
+/* stub for stdio */
+signed int printf_sync(const char *pFormat, ...)
+{
+	va_list ap;
+	signed int result;
+
+	va_start(ap, pFormat);
+	result = vprintf(pFormat, ap);
+	va_end(ap);
+
+	return result;
+}
+
+
+/***********************************************************************
+ * stub functions required by card_emu.c
+ ***********************************************************************/
+
+void card_emu_uart_wait_tx_idle(uint8_t uart_chan)
+{
+}
+
+int card_emu_uart_update_fidi(uint8_t uart_chan, unsigned int fidi)
+{
+	printf("uart_update_fidi(uart_chan=%u, fidi=%u)\n", uart_chan, fidi);
+	return 0;
+}
+
+/* a buffer in which we store those bytes send by the UART towards the card
+ * reader, so we can verify in test cases what was actually written  */
+static uint8_t tx_debug_buf[1024];
+static unsigned int tx_debug_buf_idx;
+
+/* the card emulator wants to send some data to the host [reader] */
+int card_emu_uart_tx(uint8_t uart_chan, uint8_t byte)
+{
+	printf("UART_TX(%02x)\n", byte);
+	tx_debug_buf[tx_debug_buf_idx++] = byte;
+	return 1;
+}
+
+void card_emu_uart_enable(uint8_t uart_chan, uint8_t rxtx)
+{
+	char *rts;
+	switch (rxtx) {
+	case 0:
+		rts = "OFF";
+		break;
+	case ENABLE_TX:
+		rts = "TX";
+		break;
+	case ENABLE_TX_TIMER_ONLY:
+		rts = "TX-TIMER-ONLY";
+		break;
+	case ENABLE_RX:
+		rts = "RX";
+		break;
+	default:
+		rts = "unknown";
+		break;
+	};
+
+	printf("uart_enable(uart_chan=%u, %s)\n", uart_chan, rts);
+}
+
+void card_emu_uart_interrupt(uint8_t uart_chan)
+{
+	printf("uart_interrupt(uart_chan=%u)\n", uart_chan);
+}
+
+void card_emu_uart_update_wt(uint8_t uart_chan, uint32_t wt)
+{
+	printf("%s(uart_chan=%u, wtime=%u)\n", __func__, uart_chan, wt);
+}
+
+void card_emu_uart_reset_wt(uint8_t uart_chan)
+{
+	printf("%s(uart_chan=%u\n", __func__, uart_chan);
+}
+
+void mode_cardemu_set_presence_pol(uint8_t instance, bool high)
+{
+}
+
+bool mode_cardemu_get_presence_pol(uint8_t instance)
+{
+	return false;
+}
+
+/***********************************************************************
+ * test helper functions
+ ***********************************************************************/
+
+
+static void reader_check_and_clear(const uint8_t *data, unsigned int len)
+{
+	assert(len == tx_debug_buf_idx);
+	assert(!memcmp(tx_debug_buf, data, len));
+	tx_debug_buf_idx = 0;
+}
+
+static const uint8_t atr[] = { 0x3b, 0x02, 0x14, 0x50 };
+
+static int verify_atr(struct card_handle *ch)
+{
+	unsigned int i;
+
+	printf("receiving + verifying ATR:\n");
+	for (i = 0; i < sizeof(atr); i++) {
+		assert(card_emu_tx_byte(ch) == 1);
+	}
+	assert(card_emu_tx_byte(ch) == 0);
+	reader_check_and_clear(atr, sizeof(atr));
+
+	return 1;
+}
+
+static void io_start_card_atr(struct card_handle *ch, const uint8_t *a, unsigned int alen)
+{
+	unsigned int i;
+
+	card_emu_set_atr(ch, a, alen);
+
+	/* bring the card up from the dead */
+	card_emu_io_statechg(ch, CARD_IO_VCC, 1);
+	assert(card_emu_tx_byte(ch) == 0);
+	card_emu_io_statechg(ch, CARD_IO_CLK, 1);
+	assert(card_emu_tx_byte(ch) == 0);
+	card_emu_io_statechg(ch, CARD_IO_RST, 1);
+	assert(card_emu_tx_byte(ch) == 0);
+
+	/* release from reset and verify the ATR */
+	card_emu_io_statechg(ch, CARD_IO_RST, 0);
+	card_emu_wtime_expired(ch);
+
+	printf("receiving + verifying ATR:\n");
+	for (i = 0; i < alen; i++)
+		assert(card_emu_tx_byte(ch) == 1);
+	assert(card_emu_tx_byte(ch) == 0);
+	reader_check_and_clear(a, alen);
+}
+
+static void io_start_card(struct card_handle *ch)
+{
+	card_emu_set_atr(ch, atr, sizeof(atr));
+
+	/* bring the card up from the dead */
+	card_emu_io_statechg(ch, CARD_IO_VCC, 1);
+	assert(card_emu_tx_byte(ch) == 0);
+	card_emu_io_statechg(ch, CARD_IO_CLK, 1);
+	assert(card_emu_tx_byte(ch) == 0);
+	card_emu_io_statechg(ch, CARD_IO_RST, 1);
+	assert(card_emu_tx_byte(ch) == 0);
+
+	/* release from reset and verify th ATR */
+	card_emu_io_statechg(ch, CARD_IO_RST, 0);
+	/* simulate waiting time before ATR expired */
+	card_emu_wtime_expired(ch);
+	verify_atr(ch);
+}
+
+/* emulate the host/reader sending some bytes to the [emulated] card */
+static void reader_send_bytes(struct card_handle *ch, const uint8_t *bytes, unsigned int len)
+{
+	unsigned int i;
+	for (i = 0; i < len; i++) {
+		printf("UART_RX(%02x)\n", bytes[i]);
+		card_emu_process_rx_byte(ch, bytes[i]);
+	}
+}
+
+static void dump_rctx(struct msgb *msg)
+{
+	struct simtrace_msg_hdr *mh = (struct simtrace_msg_hdr *) msg->l1h;
+	struct cardemu_usb_msg_rx_data *rxd;
+	int i;
+#if 0
+
+	printf("req_ctx(%p): state=%u, size=%u, tot_len=%u, idx=%u, data=%p\n",
+		rctx, rctx->state, rctx->size, rctx->tot_len, rctx->idx, rctx->data);
+	printf("  msg_type=%u, seq_nr=%u, msg_len=%u\n",
+		mh->msg_type, mh->seq_nr, mh->msg_len);
+#endif
+	printf("%s\n", msgb_hexdump(msg));
+
+	switch (mh->msg_type) {
+	case SIMTRACE_MSGT_DO_CEMU_RX_DATA:
+		rxd = (struct cardemu_usb_msg_rx_data *) msg->l2h;
+		printf("    flags=%x, data=", rxd->flags);
+		for (i = 0; i < rxd->data_len; i++)
+			printf(" %02x", rxd->data[i]);
+		printf("\n");
+		break;
+	}
+}
+
+static void get_and_verify_rctx(uint8_t ep, const uint8_t *data, unsigned int len)
+{
+	struct usb_buffered_ep *bep = usb_get_buf_ep(ep);
+	struct msgb *msg;
+	struct cardemu_usb_msg_tx_data *td;
+	struct cardemu_usb_msg_rx_data *rd;
+	struct simtrace_msg_hdr *mh;
+
+	assert(bep);
+	msg = msgb_dequeue_count(&bep->queue, &bep->queue_len);
+	assert(msg);
+	dump_rctx(msg);
+	assert(msg->l1h);
+	mh = (struct simtrace_msg_hdr *) msg->l1h;
+
+	/* verify the contents of the rctx */
+	switch (mh->msg_type) {
+	case SIMTRACE_MSGT_DO_CEMU_RX_DATA:
+		rd = (struct cardemu_usb_msg_rx_data *) msg->l2h;
+		assert(rd->data_len == len);
+		assert(!memcmp(rd->data, data, len));
+		break;
+#if 0
+	case RCTX_S_UART_RX_PENDING:
+		rd = (struct cardemu_usb_msg_rx_data *) msg->l2h;
+		assert(rd->data_len == len);
+		assert(!memcmp(rd->data, data, len));
+		break;
+#endif
+	default:
+		assert(0);
+	}
+
+	/* free the req_ctx, indicating it has fully arrived on the host */
+	usb_buf_free(msg);
+}
+
+static void get_and_verify_rctx_pps(const uint8_t *data, unsigned int len)
+{
+	struct usb_buffered_ep *bep = usb_get_buf_ep(PHONE_DATAIN);
+	struct msgb *msg;
+	struct simtrace_msg_hdr *mh;
+	struct cardemu_usb_msg_pts_info *ptsi;
+
+	assert(bep);
+	msg = msgb_dequeue_count(&bep->queue, &bep->queue_len);
+	assert(msg);
+	dump_rctx(msg);
+	assert(msg->l1h);
+	mh = (struct simtrace_msg_hdr *) msg->l1h;
+	ptsi = (struct cardemu_usb_msg_pts_info *) msg->l2h;
+
+	/* FIXME: verify */
+	assert(mh->msg_type == SIMTRACE_MSGT_DO_CEMU_PTS);
+	assert(!memcmp(ptsi->req, data, len));
+	assert(!memcmp(ptsi->resp, data, len));
+
+	/* free the req_ctx, indicating it has fully arrived on the host */
+	usb_buf_free(msg);
+}
+
+/* emulate a TPDU header being sent by the reader/phone */
+static void rdr_send_tpdu_hdr(struct card_handle *ch, const uint8_t *tpdu_hdr)
+{
+	struct llist_head *queue = usb_get_queue(PHONE_DATAIN);
+
+	/* we don't want a receive context to become available during
+	 * the first four bytes */
+	reader_send_bytes(ch, tpdu_hdr, 4);
+	assert(llist_empty(queue));
+
+	reader_send_bytes(ch, tpdu_hdr+4, 1);
+	/* but then after the final byte of the TPDU header, we want a
+	 * receive context to be available for USB transmission */
+	get_and_verify_rctx(PHONE_DATAIN, tpdu_hdr, 5);
+}
+
+/* emulate a SIMTRACE_MSGT_DT_CEMU_TX_DATA received from USB */
+static void host_to_device_data(struct card_handle *ch, const uint8_t *data, uint16_t len,
+				unsigned int flags)
+{
+	struct msgb *msg;
+	struct simtrace_msg_hdr *mh;
+	struct cardemu_usb_msg_tx_data *rd;
+	struct llist_head *queue;
+
+	/* allocate a free req_ctx */
+	msg = usb_buf_alloc(PHONE_DATAOUT);
+	assert(msg);
+	/* initialize the common header */
+	msg->l1h = msg->head;
+	mh = (struct simtrace_msg_hdr *) msgb_put(msg, sizeof(*mh));
+	mh->msg_class = SIMTRACE_MSGC_CARDEM;
+	mh->msg_type = SIMTRACE_MSGT_DT_CEMU_TX_DATA;
+
+	/* initialize the tx_data message */
+	msg->l2h = msgb_put(msg, sizeof(*rd) + len);
+	rd = (struct cardemu_usb_msg_tx_data *) msg->l2h;
+	rd->flags = flags;
+	/* copy data and set length */
+	rd->data_len = len;
+	memcpy(rd->data, data, len);
+
+	mh->msg_len = sizeof(*mh) + sizeof(*rd) + len;
+
+	/* Mirror dispatch_usb_command_cardem(), which drops a response the card
+	 * emulation is not ready for. Enqueueing straight past this gate let a
+	 * state missing from card_emu_ch_ready() go unnoticed here while the
+	 * real firmware silently discarded every response in that state.
+	 *
+	 * Deliberately not assert(): libcommon's assert.h redefines it to the
+	 * firmware's ASSERT, which spins rather than aborting, so a failure here
+	 * would hang `make check` instead of failing it. */
+	if (!card_emu_ch_ready(ch)) {
+		fprintf(stderr, "card_emu_ch_ready() is false in the current card "
+			"state, so the firmware would drop this response\n");
+		exit(1);
+	}
+
+	/* hand the req_ctx to the UART transmit code */
+	queue = card_emu_get_uart_tx_queue(ch);
+	assert(queue);
+	msgb_enqueue(queue, msg);
+}
+
+/* card-transmit any pending characters */
+static int card_tx_verify_chars(struct card_handle *ch, const uint8_t *data, unsigned int data_len)
+{
+	int count = 0;
+
+	while (card_emu_tx_byte(ch)) {
+		count++;
+	}
+
+	assert(count == data_len);
+	reader_check_and_clear(data, data_len);
+
+	return count;
+}
+
+const uint8_t tpdu_hdr_sel_mf[] = { 0xA0, 0xA4, 0x00, 0x00, 0x00 };
+const uint8_t tpdu_pb_sw[] = { 0x90, 0x00 };
+
+static void
+test_tpdu_reader2card(struct card_handle *ch, const uint8_t *hdr, const uint8_t *body, uint8_t body_len)
+{
+	printf("\n==> transmitting APDU (HDR + PB + card-RX)\n");
+
+	/* emulate the reader sending a TPDU header */
+	rdr_send_tpdu_hdr(ch, hdr);
+	/* we shouldn't have any pending card-TX yet */
+	card_tx_verify_chars(ch, NULL, 0);
+
+	/* card emulator PC sends a singly byte PB response via USB */
+	host_to_device_data(ch, hdr+1, 1, CEMU_DATA_F_FINAL | CEMU_DATA_F_PB_AND_RX);
+	/* card actually sends that single PB */
+	card_tx_verify_chars(ch, hdr+1, 1);
+
+	/* emulate more characters from reader to card */
+	reader_send_bytes(ch, body, body_len);
+
+	/* check if we have received them on the USB side */
+	get_and_verify_rctx(PHONE_DATAIN, body, body_len);
+
+	/* ensure there is no extra data received on usb */
+	assert(llist_empty(usb_get_queue(PHONE_DATAOUT)));
+
+	/* card emulator sends SW via USB */
+	host_to_device_data(ch, tpdu_pb_sw, sizeof(tpdu_pb_sw),
+			    CEMU_DATA_F_FINAL | CEMU_DATA_F_PB_AND_TX);
+	/* obtain any pending tx chars */
+	card_tx_verify_chars(ch, tpdu_pb_sw, sizeof(tpdu_pb_sw));
+
+	/* simulate some clock stop */
+	card_emu_io_statechg(ch, CARD_IO_CLK, 0);
+	card_emu_io_statechg(ch, CARD_IO_CLK, 1);
+}
+
+static void
+test_tpdu_card2reader(struct card_handle *ch, const uint8_t *hdr, const uint8_t *body, uint8_t body_len)
+{
+	printf("\n==> transmitting APDU (HDR + PB + card-TX)\n");
+
+	/* emulate the reader sending a TPDU header */
+	rdr_send_tpdu_hdr(ch, hdr);
+	card_tx_verify_chars(ch, NULL, 0);
+
+	/* card emulator PC sends a response PB via USB */
+	host_to_device_data(ch, hdr+1, 1, CEMU_DATA_F_PB_AND_TX);
+
+	/* card actually sends that PB */
+	card_tx_verify_chars(ch, hdr+1, 1);
+
+	/* emulate more characters from card to reader */
+	host_to_device_data(ch, body, body_len, 0);
+	/* obtain those bytes as they arrvive on the card */
+	card_tx_verify_chars(ch, body, body_len);
+
+	/* ensure there is no extra data received on usb */
+	assert(llist_empty(usb_get_queue(PHONE_DATAOUT)));
+
+	/* card emulator sends SW via USB */
+	host_to_device_data(ch, tpdu_pb_sw, sizeof(tpdu_pb_sw), CEMU_DATA_F_FINAL);
+
+	/* obtain any pending tx chars */
+	card_tx_verify_chars(ch, tpdu_pb_sw, sizeof(tpdu_pb_sw));
+
+	/* simulate some clock stop */
+	card_emu_io_statechg(ch, CARD_IO_CLK, 0);
+	card_emu_io_statechg(ch, CARD_IO_CLK, 1);
+}
+
+const uint8_t pps[] = {
+	/* PPSS identifies the PPS request or response and is set to
+	 * 'FF'. */
+	0xFF,		// PPSS
+	/* In PPS0, each bit 5, 6 or 7 set to 1 indicates the presence
+	 * of an optional byte PPS 1 , PPS 2 , PPS 3 ,
+	 * respectively. Bits 4 to 1 encode a type T to propose a
+	 * transmission protocol. Bit 8 is reserved for future
+	 * use and shall be set to 0. */
+	0b00010000,	// PPS0: PPS1 present
+	0x00,		// PPS1 proposed Fi/Di value
+	0xFF ^ 0b00010000// PCK
+};
+
+/* Fi/Di that is actually valid: Fi idx 9 (Fi=512) and Di idx 4 (Di=8)
+ * This tests calculating F/D ratio (512/8 = 64) and the calculation of the
+ * waiting time which scales with Di. */
+const uint8_t pps_fidi[] = {
+	0xFF,			// PPSS
+	0b00010000,		// PPS0: PPS1 present
+	0x94,			// PPS1: Fi index 9, Di index 4
+	0xFF ^ 0b00010000 ^ 0x94// PCK
+};
+
+/* Di 8 idx Di=12 (ISO 7816-3:2006 Table 8),:
+ * the ratio be 372/12 = 31, not 372*12. */
+const uint8_t pps_di12[] = {
+	0xFF,			// PPSS
+	0b00010000,		// PPS0: PPS1 present
+	0x18,			// PPS1: Fi index 1, Di index 8
+	0xFF ^ 0b00010000 ^ 0x18// PCK
+};
+
+/* Fi idx 5 Fi=1488 andDi=1 -> ratio 1488, needs all 11 bits of
+ * the US_FIDI.FI_DI_RATIO field. */
+const uint8_t pps_hi_ratio[] = {
+	0xFF,			// PPSS
+	0b00010000,		// PPS0: PPS1 present
+	0x51,			// PPS1: Fi index 5, Di index 1
+	0xFF ^ 0b00010000 ^ 0x51// PCK
+};
+
+/* Get a cemu status report to check the negotiated parameters
+ * This is the only way to get the waiting time from struct card_handle. */
+static void verify_status(struct card_handle *ch, uint8_t exp_f_index, uint8_t exp_d_index,
+			  uint32_t exp_waiting_time)
+{
+	struct usb_buffered_ep *bep = usb_get_buf_ep(PHONE_DATAIN);
+	struct cardemu_usb_msg_status *sts;
+	struct simtrace_msg_hdr *mh;
+	struct msgb *msg;
+
+	card_emu_report_status(ch, false);
+
+	assert(bep);
+	msg = msgb_dequeue_count(&bep->queue, &bep->queue_len);
+	assert(msg);
+	mh = (struct simtrace_msg_hdr *) msg->l1h;
+	assert(mh->msg_type == SIMTRACE_MSGT_BD_CEMU_STATUS);
+	sts = (struct cardemu_usb_msg_status *) msg->l2h;
+
+	printf("status: F_index=%u D_index=%u wi=%u waiting_time=%u\n",
+		sts->F_index, sts->D_index, sts->wi, sts->waiting_time);
+
+	assert(sts->F_index == exp_f_index);
+	assert(sts->D_index == exp_d_index);
+	/* WT = WI x 960 x D in etu, see ISO 7816-3 Section 10.2 */
+	assert(sts->waiting_time == exp_waiting_time);
+
+	usb_buf_free(msg);
+}
+
+static void
+test_ppss(struct card_handle *ch, const uint8_t *req, unsigned int req_len,
+	  uint8_t exp_f_index, uint8_t exp_d_index, uint32_t exp_waiting_time)
+{
+	printf("\n==> PPS exchange\n");
+	reader_send_bytes(ch, req, req_len);
+	get_and_verify_rctx_pps(req, req_len);
+	card_tx_verify_chars(ch, req, req_len);
+	verify_status(ch, exp_f_index, exp_d_index, exp_waiting_time);
+}
+
+/* READ RECORD (offset 0, 10 bytes) */
+const uint8_t tpdu_hdr_read_rec[] = { 0xA0, 0xB2, 0x00, 0x00, 0x0A };
+const uint8_t tpdu_body_read_rec[] = { 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09 };
+
+/* WRITE RECORD */
+const uint8_t tpdu_hdr_write_rec[] = { 0xA0, 0xD2, 0x00, 0x00, 0x07 };
+const uint8_t tpdu_body_write_rec[] = { 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06 };
+
+
+/***********************************************************************
+ * T=1
+ ***********************************************************************/
+
+/* ATR offering T=1: TS, T0 (TD1 present, no historical bytes), TD1 naming
+ * T=1 with nothing following, then TCK over T0..TD1 */
+static const uint8_t atr_t1[] = { 0x3b, 0x80, 0x01, 0x80 ^ 0x01 };
+
+/* build a T=1 block, computing the LRC independently of the implementation */
+static unsigned int mkblock_lrc(uint8_t *out, uint8_t nad, uint8_t pcb,
+				const uint8_t *inf, uint8_t len)
+{
+	unsigned int i = 0, j;
+	uint8_t lrc = 0;
+
+	out[i++] = nad;
+	out[i++] = pcb;
+	out[i++] = len;
+	if (len) {
+		memcpy(out + i, inf, len);
+		i += len;
+	}
+	for (j = 0; j < i; j++)
+		lrc ^= out[j];
+	out[i++] = lrc;
+
+	return i;
+}
+
+/* like get_and_verify_rctx(), but also checks the flags field */
+static void get_and_verify_rctx_flags(uint8_t ep, const uint8_t *data,
+				      unsigned int len, uint32_t flags)
+{
+	struct usb_buffered_ep *bep = usb_get_buf_ep(ep);
+	struct cardemu_usb_msg_rx_data *rd;
+	struct simtrace_msg_hdr *mh;
+	struct msgb *msg;
+
+	assert(bep);
+	msg = msgb_dequeue_count(&bep->queue, &bep->queue_len);
+	assert(msg);
+	dump_rctx(msg);
+	assert(msg->l1h);
+
+	mh = (struct simtrace_msg_hdr *) msg->l1h;
+	assert(mh->msg_type == SIMTRACE_MSGT_DO_CEMU_RX_DATA);
+
+	rd = (struct cardemu_usb_msg_rx_data *) msg->l2h;
+	assert(rd->flags == flags);
+	assert(rd->data_len == len);
+	assert(!memcmp(rd->data, data, len));
+
+	usb_buf_free(msg);
+}
+
+static void test_t1_exchange(struct card_handle *ch)
+{
+	const uint8_t capdu[] = { 0x00, 0xA4, 0x04, 0x00, 0x00 };
+	const uint8_t rapdu[] = { 0x6F, 0x05, 0x90, 0x00 };
+	uint8_t blk[300], expect[300];
+	unsigned int n;
+
+	printf("\n==> T=1: plain block exchange\n");
+
+	/* power-cycle into an ATR offering T=1, so the card should come up
+	 * talking T=1 without any PPS */
+	card_emu_io_statechg(ch, CARD_IO_VCC, 0);
+	io_start_card_atr(ch, atr_t1, sizeof(atr_t1));
+
+	/* reader sends I(N(S)=0, no chaining) carrying the command */
+	n = mkblock_lrc(blk, 0x00, 0x00, capdu, sizeof(capdu));
+	reader_send_bytes(ch, blk, n);
+
+	/* the INF must reach the host tagged as a final T=1 block */
+	get_and_verify_rctx_flags(PHONE_DATAIN, capdu, sizeof(capdu),
+				  CEMU_DATA_F_T1_BLOCK | CEMU_DATA_F_FINAL);
+
+	/* an unchained command needs no acknowledgement */
+	card_tx_verify_chars(ch, NULL, 0);
+
+	/* host supplies the whole response as one final chunk */
+	host_to_device_data(ch, rapdu, sizeof(rapdu),
+			    CEMU_DATA_F_T1_BLOCK | CEMU_DATA_F_FINAL);
+	card_emu_have_new_uart_tx(ch);
+
+	/* which must come back as a single I-block with N(S)=0 */
+	n = mkblock_lrc(expect, 0x00, 0x00, rapdu, sizeof(rapdu));
+	card_tx_verify_chars(ch, expect, n);
+}
+
+static void test_t1_chained_response(struct card_handle *ch)
+{
+	const uint8_t capdu[] = { 0x00, 0xB0, 0x00, 0x00, 0x40 };
+	uint8_t part1[32], part2[16];
+	uint8_t blk[300], expect[300];
+	unsigned int n;
+
+	printf("\n==> T=1: response split over two I-blocks\n");
+
+	memset(part1, 0xA5, sizeof(part1));
+	memset(part2, 0x5A, sizeof(part2));
+
+	/* The previous exchange left both sequence numbers at 1, so the reader
+	 * sends N(S)=1 and the card's next I-block also carries N(S)=1. */
+	n = mkblock_lrc(blk, 0x00, 0x40, capdu, sizeof(capdu));
+	reader_send_bytes(ch, blk, n);
+	get_and_verify_rctx_flags(PHONE_DATAIN, capdu, sizeof(capdu),
+				  CEMU_DATA_F_T1_BLOCK | CEMU_DATA_F_FINAL);
+
+	/* first chunk, not final: I(N(S)=1, M=1) */
+	host_to_device_data(ch, part1, sizeof(part1), CEMU_DATA_F_T1_BLOCK);
+	card_emu_have_new_uart_tx(ch);
+	n = mkblock_lrc(expect, 0x00, 0x60, part1, sizeof(part1));
+	card_tx_verify_chars(ch, expect, n);
+
+	/* The card advanced to N(S)=0, so the reader acknowledges by asking for
+	 * N(R)=0 and the card sends the rest as I(N(S)=0, M=0). */
+	host_to_device_data(ch, part2, sizeof(part2),
+			    CEMU_DATA_F_T1_BLOCK | CEMU_DATA_F_FINAL);
+	n = mkblock_lrc(blk, 0x00, 0x80, NULL, 0);
+	reader_send_bytes(ch, blk, n);
+
+	n = mkblock_lrc(expect, 0x00, 0x00, part2, sizeof(part2));
+	card_tx_verify_chars(ch, expect, n);
+}
+
+/* The host does not hand a long response over one chunk at a time in step with
+ * the reader: simtrace2-remsim splits it and writes every chunk to USB at once,
+ * so they land back to back. Only the first may go on the line. Putting the
+ * rest out as they arrive reconfigures the USART on top of the block still
+ * being sent, and then talks over the reader's R-block on a half-duplex line. */
+static void test_t1_response_chunks_arrive_together(struct card_handle *ch)
+{
+	const uint8_t capdu[] = { 0x00, 0xB0, 0x00, 0x00, 0x40 };
+	uint8_t part1[32], part2[16];
+	uint8_t blk[300], expect[300];
+	unsigned int n;
+
+	printf("\n==> T=1: whole response queued before the reader acknowledges\n");
+
+	memset(part1, 0xA5, sizeof(part1));
+	memset(part2, 0x5A, sizeof(part2));
+
+	/* power-cycle so the sequence numbers start from a known point */
+	card_emu_io_statechg(ch, CARD_IO_VCC, 0);
+	io_start_card_atr(ch, atr_t1, sizeof(atr_t1));
+
+	n = mkblock_lrc(blk, 0x00, 0x00, capdu, sizeof(capdu));
+	reader_send_bytes(ch, blk, n);
+	get_and_verify_rctx_flags(PHONE_DATAIN, capdu, sizeof(capdu),
+				  CEMU_DATA_F_T1_BLOCK | CEMU_DATA_F_FINAL);
+
+	/* both chunks handed over back to back, as the host really does */
+	host_to_device_data(ch, part1, sizeof(part1), CEMU_DATA_F_T1_BLOCK);
+	card_emu_have_new_uart_tx(ch);
+	host_to_device_data(ch, part2, sizeof(part2),
+			    CEMU_DATA_F_T1_BLOCK | CEMU_DATA_F_FINAL);
+	card_emu_have_new_uart_tx(ch);
+
+	/* only the first chunk goes out: I(N(S)=0, M=1) */
+	n = mkblock_lrc(expect, 0x00, 0x20, part1, sizeof(part1));
+	card_tx_verify_chars(ch, expect, n);
+
+	/* and then the card must be silent, however much the host has queued */
+	card_tx_verify_chars(ch, NULL, 0);
+
+	/* the reader acknowledges with R(N(R)=1), which releases the rest */
+	n = mkblock_lrc(blk, 0x00, 0x90, NULL, 0);
+	reader_send_bytes(ch, blk, n);
+
+	n = mkblock_lrc(expect, 0x00, 0x40, part2, sizeof(part2));
+	card_tx_verify_chars(ch, expect, n);
+}
+
+static void test_t1_reader_chained_command(struct card_handle *ch)
+{
+	uint8_t seg1[24], seg2[8];
+	uint8_t blk[300], expect[300];
+	unsigned int n;
+
+	printf("\n==> T=1: command split over two I-blocks\n");
+
+	memset(seg1, 0x11, sizeof(seg1));
+	memset(seg2, 0x22, sizeof(seg2));
+
+	/* first segment with the chaining bit set, N(S)=0 */
+	n = mkblock_lrc(blk, 0x00, 0x20, seg1, sizeof(seg1));
+	reader_send_bytes(ch, blk, n);
+
+	/* handed to the host without the final flag */
+	get_and_verify_rctx_flags(PHONE_DATAIN, seg1, sizeof(seg1),
+				  CEMU_DATA_F_T1_BLOCK);
+
+	/* and acknowledged to the reader with R(N(R)=1) */
+	n = mkblock_lrc(expect, 0x00, 0x90, NULL, 0);
+	card_tx_verify_chars(ch, expect, n);
+
+	/* final segment, N(S)=1 */
+	n = mkblock_lrc(blk, 0x00, 0x40, seg2, sizeof(seg2));
+	reader_send_bytes(ch, blk, n);
+	get_and_verify_rctx_flags(PHONE_DATAIN, seg2, sizeof(seg2),
+				  CEMU_DATA_F_T1_BLOCK | CEMU_DATA_F_FINAL);
+	card_tx_verify_chars(ch, NULL, 0);
+}
+
+int main(int argc, char **argv)
+{
+	struct card_handle *ch;
+	unsigned int i;
+
+	ch = card_emu_init(0, 42, PHONE_DATAIN, PHONE_INT, false, true, false);
+	assert(ch);
+
+	usb_buf_init();
+
+	/* start up the card (VCC/RST, ATR) */
+	io_start_card(ch);
+	card_tx_verify_chars(ch, NULL, 0);
+
+	/* WI is 10 so WT = 10 x 960 x D */
+	/* Fi/Di index 0/0 is invalid: the F/D ratio is rejected, D falls back to 1 */
+	test_ppss(ch, pps, sizeof(pps), 0, 0, 10 * 960 * 1);
+	test_ppss(ch, pps_fidi, sizeof(pps_fidi), 9, 4, 10 * 960 * 8);
+	test_ppss(ch, pps_di12, sizeof(pps_di12), 1, 8, 10 * 960 * 12);
+	test_ppss(ch, pps_hi_ratio, sizeof(pps_hi_ratio), 5, 1, 10 * 960 * 1);
+
+	for (i = 0; i < 2; i++) {
+		test_tpdu_reader2card(ch, tpdu_hdr_write_rec, tpdu_body_write_rec, sizeof(tpdu_body_write_rec));
+
+		test_tpdu_card2reader(ch, tpdu_hdr_read_rec, tpdu_body_read_rec, sizeof(tpdu_body_read_rec));
+	}
+
+	/* the card comes back up on T=1 purely because the ATR says so */
+	test_t1_exchange(ch);
+	test_t1_chained_response(ch);
+	test_t1_reader_chained_command(ch);
+	/* last: it power-cycles, so it must not sit between tests that carry
+	 * sequence-number state from one to the next */
+	test_t1_response_chunks_arrive_together(ch);
+
+	printf("\nall tests passed\n");
+
+	exit(0);
+}

@@ -1,0 +1,9 @@
+nobase_include_HEADERS = \
+		osmocom/simtrace2/apdu_dispatch.h \
+		osmocom/simtrace2/simtrace2_api.h \
+		osmocom/simtrace2/simtrace_usb.h \
+		osmocom/simtrace2/simtrace_prot.h \
+		osmocom/simtrace2/usb_util.h \
+		osmocom/simtrace2/gsmtap.h \
+		osmocom/simtrace2/reader_pcsc.h \
+		$(NULL)

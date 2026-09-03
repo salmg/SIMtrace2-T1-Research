@@ -1,0 +1,10 @@
+sysmocom - s.f.m.c. GmbH
+PRODUCT_STRING
+SIMtrace Sniffer
+SIMtrace CCID
+SIMtrace Card Emulation
+SIMtrace MITM
+CardEmulator Modem 1
+CardEmulator Modem 2
+CardEmulator Modem 3
+CardEmulator Modem 4

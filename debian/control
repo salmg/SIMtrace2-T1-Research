@@ -1,0 +1,65 @@
+Source: simtrace2
+Maintainer: Harald Welte <laforge@gnumonks.org>
+Section: devel
+Priority: optional
+Build-Depends: debhelper (>= 9),
+               autotools-dev,
+               autoconf,
+               automake,
+               libtool,
+               pkg-config,
+               git,
+               dh-autoreconf,
+               libosmocore-dev,
+               libpcsclite-dev,
+               libnewlib-arm-none-eabi,
+               libusb-1.0-0-dev,
+               gcc-arm-none-eabi
+Standards-Version: 3.9.8
+Vcs-Git: git://git.osmocom.org/simtrace2.git
+Vcs-Browser: http://git.osmocom.org/simtrace2/
+Homepage: http://osmocom.org/projects/simtrace2/wiki
+
+Package: simtrace2-firmware
+Section: devel
+Architecture: all
+Recommends: dfu-util
+Description: Firmware for SAM3 based SIMtrace2 USB Devices.
+ Open Source firmware for the Cortex-M3 microcontroller in the
+ "Osmocom SIMtrace2" USB-attached peripheral device.  Will only work in
+ SAM3S-based SIMtrace2, not in its SAM7S-based predecessor SIMtrace!
+
+Package: simtrace2-utils
+Section: devel
+Architecture: any
+Multi-Arch: same
+Depends: ${shlibs:Depends}, ${misc:Depends}, libosmo-simtrace2-0
+Recommends: simtrace2-firmware
+Description: Host utilities to communicate with SIMtrace2 USB Devices.
+
+Package: libosmo-simtrace2-0
+Section: libs
+Architecture: any
+Multi-Arch: same
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: Osmocom SIMtrace2 library
+  This library contains core "driver" functionality to interface with the
+  Osmocom SIMtrace2 (and compatible) USB device firmware.  It enables
+  applications to implement SIM card / smart card tracing as well as
+  SIM / smart card emulation functions.
+
+Package: libosmo-simtrace2-dev
+Section: libdevel
+Architecture: any
+Multi-Arch: same
+Depends: libosmo-simtrace2-0, ${misc:Depends}
+Description: Development headers for Osmocom SIMtrace2 library
+  This library contains core "driver" functionality to interface with the
+  Osmocom SIMtrace2 (and compatible) USB device firmware.  It enables
+  applications to implement SIM card / smart card tracing as well as
+  SIM / smart card emulation functions.
+  .
+  The header files provided by this package may be used to develop
+  with any of the libosmocore libraries.
+  .
+  Also static libraries are installed with this package.
