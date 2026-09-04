@@ -1,0 +1,1940 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="author" content="Salvador Mendoza">
+<meta name="description" content="How the SIMtrace2 card relay works: activation, the ATR rewrite, protocol selection, EMV support over T=0 and T=1, and the T=1 block layer.">
+<title>Card Relay Internals</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=STIX+Two+Text:ital,wght@0,400;0,500;0,600;0,700;1,400;1,600&display=swap">
+
+<style>
+/* A deliberately single-theme document: this is a paper, so it stays on light
+   stock in any viewer. Every colour is painted explicitly for that reason. */
+:root {
+  --paper:      #FFFFFF;
+  --panel:      #F7F7F5;
+  --panel-2:    #EEEEEA;
+  --ink:        #1B1C1E;
+  --muted:      #5B5D63;
+  --faint:      #8A8D94;
+  --rule:       #E3E3DE;
+  --rule-firm:  #C9C9C2;
+  --brass:      #A07C3A;
+  --brass-soft: #F6EFE1;
+  --reader:     #4257A0;
+  --reader-soft:#EAEEF8;
+  --card:       #2F7F72;
+  --card-soft:  #E8F3F1;
+  --ok:         #2A6B4A;
+  --warn:       #8A6512;
+  --bad:        #9E4030;
+  --bad-soft:   #F9EAE6;
+  --serif: "STIX Two Text", "Times New Roman", Times, serif;
+  --mono:  "IBM Plex Mono", ui-monospace, "Courier New", monospace;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--serif);
+  font-size: 17px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+.wrap { max-width: 1120px; margin: 0 auto; padding: 0 28px 96px; }
+
+/* ---- paper spine ---------------------------------------------------- */
+.sheet { display: grid; grid-template-columns: 132px minmax(0, 1fr); gap: 0 32px; }
+.rail { grid-column: 1; }
+.col  { grid-column: 2; max-width: 66ch; }
+.wide { grid-column: 1 / -1; }
+.wide > .col { margin-left: 164px; }
+
+@media (max-width: 860px) {
+  .sheet { grid-template-columns: 1fr; gap: 0; }
+  .rail, .col, .wide { grid-column: 1; }
+  .wide > .col { margin-left: 0; }
+  .rail { margin-bottom: 6px; }
+}
+
+/* ---- masthead ------------------------------------------------------- */
+.masthead { border-bottom: 1.5px solid var(--ink); padding: 56px 0 24px; margin-bottom: 34px; }
+.eyebrow {
+  font-family: var(--serif); font-style: italic;
+  font-size: 15px; letter-spacing: .01em; color: var(--muted); margin: 0 0 14px;
+}
+h1 {
+  font-family: var(--serif); font-weight: 700;
+  font-size: clamp(2.1rem, 5vw, 2.95rem);
+  line-height: 1.1; letter-spacing: -.012em; margin: 0 0 18px;
+  text-wrap: balance;
+}
+.byline {
+  font-family: var(--serif); font-size: 1.08rem; font-weight: 500;
+  margin: 0 0 20px; color: var(--ink); letter-spacing: .01em;
+}
+.standfirst { font-size: 1.11rem; color: var(--muted); margin: 0; max-width: 60ch; }
+.meta {
+  display: flex; flex-wrap: wrap; gap: 8px 26px; margin-top: 26px;
+  font-family: var(--mono); font-size: 11.5px; color: var(--faint);
+}
+.meta b { color: var(--muted); font-weight: 500; }
+
+/* ---- rail ----------------------------------------------------------- */
+.secno {
+  font-family: var(--serif); font-size: 15px; font-weight: 600;
+  letter-spacing: .04em; color: var(--brass); padding-top: 8px;
+}
+.cite {
+  font-family: var(--serif); font-style: italic; font-size: 13px;
+  line-height: 1.5; color: var(--faint);
+  margin-top: 10px; border-top: 1px solid var(--rule); padding-top: 8px;
+}
+
+/* ---- headings ------------------------------------------------------- */
+section { padding-top: 48px; }
+h2 {
+  font-family: var(--serif); font-weight: 600; font-size: 1.58rem;
+  line-height: 1.2; letter-spacing: -.008em; margin: 0 0 14px; text-wrap: balance;
+}
+h3 {
+  font-family: var(--serif); font-weight: 600; font-size: 1.12rem;
+  margin: 34px 0 10px; text-wrap: balance;
+}
+h4 {
+  font-family: var(--serif); font-style: italic; font-weight: 600;
+  font-size: .98rem; letter-spacing: .01em; color: var(--muted); margin: 26px 0 10px;
+}
+p { margin: 0 0 15px; }
+a { color: var(--brass); text-underline-offset: 2px; }
+a:focus-visible, summary:focus-visible {
+  outline: 2px solid var(--brass); outline-offset: 3px; border-radius: 2px;
+}
+strong { font-weight: 600; }
+
+ul, ol { margin: 0 0 15px; padding-left: 1.2rem; }
+li { margin-bottom: 7px; }
+li::marker { color: var(--faint); }
+
+code, .mono, kbd { font-family: var(--mono); font-variant-ligatures: none; }
+p code, li code, td code, .m {
+  font-size: .82em; background: var(--panel-2);
+  padding: .1em .34em; border-radius: 2px; word-break: break-word;
+}
+
+/* ---- callouts ------------------------------------------------------- */
+.note {
+  border-left: 2.5px solid var(--brass); background: var(--panel);
+  padding: 15px 18px; margin: 22px 0; font-size: .97rem;
+}
+.note > :last-child { margin-bottom: 0; }
+.note.bad  { border-left-color: var(--bad); }
+.note.good { border-left-color: var(--ok); }
+
+/* ---- status pills --------------------------------------------------- */
+.pill {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-family: var(--mono); font-size: 10px; font-weight: 600;
+  letter-spacing: .06em; text-transform: uppercase;
+  padding: 3px 9px; border-radius: 999px;
+  border: 1px solid currentColor; white-space: nowrap;
+}
+.pill.ok   { color: var(--ok); }
+.pill.warn { color: var(--warn); }
+.pill.bad  { color: var(--bad); }
+
+/* ---- status board --------------------------------------------------- */
+.board {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(232px, 1fr));
+  gap: 1px; background: var(--rule); border: 1px solid var(--rule);
+  margin: 26px 0 8px;
+}
+.board .cell { background: var(--paper); padding: 16px 18px 18px; }
+.board .cell h5 {
+  font-family: var(--serif); font-size: 1rem; font-weight: 600; margin: 10px 0 6px;
+}
+.board .cell p { margin: 0; font-size: .92rem; color: var(--muted); }
+
+/* ---- tables --------------------------------------------------------- */
+.tw { overflow-x: auto; margin: 20px 0; }
+table { border-collapse: collapse; width: 100%; font-size: .93rem; }
+th, td {
+  text-align: left; padding: 9px 13px 9px 0; vertical-align: top;
+  border-bottom: 1px solid var(--rule);
+}
+th {
+  font-family: var(--serif); font-style: italic; font-size: .93rem;
+  font-weight: 600; color: var(--muted);
+  border-bottom: 1px solid var(--rule-firm); white-space: nowrap;
+}
+td.m, th.m, .num { font-family: var(--mono); }
+.num { font-variant-numeric: tabular-nums; }
+td.m { font-size: .8rem; background: none; padding-right: 18px; }
+tbody tr:last-child td { border-bottom: none; }
+
+/* ---- code ----------------------------------------------------------- */
+pre {
+  background: var(--panel); border: 1px solid var(--rule);
+  border-left: 2.5px solid var(--rule-firm);
+  padding: 14px 16px; overflow-x: auto; margin: 18px 0;
+  font-family: var(--mono); font-size: 12.5px; line-height: 1.6; tab-size: 4;
+}
+pre b   { color: var(--bad); font-weight: 600; }
+pre i   { color: var(--faint); font-style: normal; }
+pre u   { color: var(--ok); text-decoration: none; font-weight: 600; }
+pre .rd { color: var(--reader); font-weight: 500; }
+pre .cd { color: var(--card);   font-weight: 500; }
+
+/* ---- figures -------------------------------------------------------- */
+figure { margin: 32px 0; }
+figure svg { display: block; width: 100%; max-width: 100%; height: auto; }
+.figbox {
+  border: 1px solid var(--rule); background: var(--panel);
+  padding: 20px 18px; overflow-x: auto;
+}
+figcaption {
+  font-size: .92rem; color: var(--muted); margin-top: 12px;
+  padding-left: 2px; max-width: 72ch;
+}
+figcaption b { color: var(--ink); font-weight: 600; }
+
+/* ---- ATR byte strip ------------------------------------------------- */
+.atr { display: flex; flex-wrap: wrap; gap: 5px; margin: 8px 0 4px; }
+.byte {
+  font-family: var(--mono); font-size: 12.5px; font-weight: 500;
+  text-align: center; padding: 5px 7px 4px;
+  border: 1px solid var(--rule-firm); min-width: 40px; background: var(--paper);
+}
+.byte small {
+  display: block; font-size: 8.5px; letter-spacing: .05em;
+  text-transform: uppercase; color: var(--faint); margin-top: 2px;
+}
+.byte.keep { border-color: var(--ok); background: var(--card-soft); }
+.byte.keep small { color: var(--ok); }
+.byte.drop {
+  border-color: var(--rule); background: none; color: var(--faint);
+  text-decoration: line-through; text-decoration-color: var(--bad);
+}
+.byte.add  { border-color: var(--brass); background: var(--brass-soft); }
+.byte.add small { color: var(--brass); }
+
+/* ---- defect ledger -------------------------------------------------- */
+.defect {
+  border: 1px solid var(--rule); border-top: 2.5px solid var(--bad);
+  padding: 18px 20px 20px; margin: 22px 0; background: var(--panel);
+}
+.defect header {
+  display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 8px;
+}
+.defect h3 { margin: 0; font-size: 1.1rem; }
+.defect .tag {
+  font-family: var(--mono); font-size: 10.5px; color: var(--bad);
+  font-weight: 600; letter-spacing: .06em;
+}
+.defect dl { margin: 14px 0 0; display: grid; grid-template-columns: 104px 1fr; gap: 7px 16px; font-size: .95rem; }
+.defect dt {
+  font-family: var(--serif); font-style: italic; font-size: .93rem;
+  font-weight: 600; color: var(--muted); padding-top: 1px;
+}
+.defect dd { margin: 0; }
+@media (max-width: 620px) {
+  .defect dl { grid-template-columns: 1fr; gap: 2px; }
+  .defect dd { margin-bottom: 10px; }
+}
+
+/* ---- legend --------------------------------------------------------- */
+.legend {
+  display: flex; flex-wrap: wrap; gap: 8px 22px; margin: 14px 0 0;
+  font-family: var(--serif); font-style: italic; font-size: .9rem; color: var(--muted);
+}
+.legend span { display: inline-flex; align-items: center; gap: 7px; }
+.sw { width: 14px; height: 3px; border-radius: 2px; display: inline-block; }
+
+hr.sec { border: 0; border-top: 1px solid var(--rule); margin: 0; }
+
+footer.end {
+  border-top: 1.5px solid var(--ink); margin-top: 60px; padding-top: 20px;
+  font-size: .95rem; color: var(--muted);
+}
+
+/* ---- print ---------------------------------------------------------- */
+@media print {
+  @page { margin: 18mm 16mm; }
+  body { font-size: 10.5pt; line-height: 1.45; background: #fff; color: #000; }
+  .wrap { max-width: none; padding: 0; }
+  .masthead { padding-top: 0; }
+  h1 { font-size: 22pt; }
+  h2 { font-size: 14pt; }
+  h3 { font-size: 11.5pt; }
+  section { padding-top: 20px; page-break-before: always; }
+  section#intro { page-break-before: avoid; }
+  figure, .defect, .board, pre, table, .figbox { page-break-inside: avoid; }
+  h2, h3, h4 { page-break-after: avoid; }
+  .figbox, pre { background: #fff; }
+  a { color: #000; text-decoration: underline; }
+  .tw, .figbox, pre { overflow-x: visible; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation: none !important; transition: none !important; }
+}
+</style>
+</head>
+<body>
+
+<div class="wrap">
+
+<header class="masthead">
+  <p class="eyebrow">SIMtrace2 T=1 Research &middot; card emulation &middot; technical reference</p>
+  <h1>Card Relay Internals</h1>
+  <p class="byline">Salvador Mendoza</p>
+  <p class="standfirst">
+    How a physical smart card connected to a desk-side reader can be made to communicate with a remote terminal as if the card were connected locally. The research focuses on ISO/IEC 7816-3 T=1, including ATR handling, protocol negotiation, block framing, sequencing, and APDU relaying.
+  </p>
+  <div class="meta">
+    <span><b>Project</b> SIMtrace2 T1 Research, based on Osmocom SIMtrace2</span>
+    <span><b>Path</b> card &rarr; PC/SC &rarr; host &rarr; USB &rarr; SAM3S &rarr; terminal</span>
+    <span><b>Firmware</b> upstream 0.9.1-22-* plus T=1</span>
+    <span><b>Status</b> Complete EMV transactions demonstrated on both terminal-facing configurations</span>
+  </div>
+</header>
+
+<!-- ================================================================ -->
+<section id="intro" class="sheet">
+  <div class="rail">
+    <div class="secno">&#167; 01</div>
+    <div class="cite">The problem,<br>and the result</div>
+  </div>
+  <div class="col">
+    <h2>Introduction</h2>
+    <p>
+      SIMtrace2 T1 Research extends Osmocom&#8217;s SIMtrace2 card emulation with an
+      ISO 7816-3 T=1 block layer. Upstream <span class="m">cardem</span> supports T=0;
+      this version supports both protocols and selects the terminal-side protocol from
+      the ATR, with PPS available for negotiation.
+    </p>
+    <p>
+      SIMtrace2 was originally designed for SIM-card communication, 
+      with T=0 as the primary protocol. Supporting payment cards introduces additional requirements. 
+      EMV cards can use T=0 or T=1, require protocol negotiation, and may enforce stricter timing 
+      and communication behavior. These differences make reliable card 
+      emulation and relaying more challenging. Many use T=1, the block-oriented protocol, and their
+      ATR advertises timing and block parameters that the terminal expects the interface
+      to honor. On top of ISO 7816-3, the terminal also applies EMV-specific constraints,
+      so an incompatible ATR can be rejected before the first APDU is exchanged.
+    </p>
+    <p>
+      The original relay did not work when placed between an EMV card and a payment
+      terminal. The failure was not a single bug; several independent issues appeared
+      in sequence, with each one masking the next.
+    </p>
+  </div>
+
+  <div class="wide">
+    <div class="tw">
+      <table>
+        <thead><tr><th style="width:22%">&nbsp;</th><th style="width:36%">At the outset</th><th>Now</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><strong>Protocol to the terminal</strong></td>
+            <td>T=0 only</td>
+            <td>T=0 or T=1, selected from the ATR and renegotiable by PPS</td>
+          </tr>
+          <tr>
+            <td><strong>Protocol to the real card</strong></td>
+            <td>T=0 only over PC/SC, so a T=1-only card could not be relayed at all</td>
+            <td>Both offered; reader and card negotiate. <span class="m">--card-proto</span> pins it</td>
+          </tr>
+          <tr>
+            <td><strong>ATR</strong></td>
+            <td>A hardcoded <span class="m">3B 00</span>, so the terminal saw a generic card and never this one</td>
+            <td>The real card&#8217;s, rewritten to keep its identity and protocol parameters while dropping the timing promises the board cannot keep</td>
+          </tr>
+          <tr>
+            <td><strong>PPS</strong></td>
+            <td>Proposals echoed back unchecked, behind a <span class="m">FIXME</span> about validating them against the ATR</td>
+            <td>Validated against what the ATR actually offered. Otherwise the card stays mute, as ISO 7816-3 &#167;9.3 requires</td>
+          </tr>
+          <tr>
+            <td><strong>EMV proprietary class <span class="m">0x80</span></strong></td>
+            <td>Classified as case 0, logged as an error, and dropped, so the transaction stalled at GET PROCESSING OPTIONS</td>
+            <td>Classified directly, with <span class="m">P3</span> read as <span class="m">Lc</span> and GENERATE AC decoded from <span class="m">P1</span></td>
+          </tr>
+          <tr>
+            <td><strong>Case-4 APDUs across a protocol mismatch</strong></td>
+            <td>Not handled</td>
+            <td>Converted, so a T=1 card can be presented to a T=0 reader</td>
+          </tr>
+          <tr>
+            <td><strong>Re-use after a transaction</strong></td>
+            <td>The board had to be reset by hand before it would work again</td>
+            <td><span class="m">--auto-reinit</span> replays removal, insertion, and reset so the terminal starts a fresh session</td>
+          </tr>
+          <tr>
+            <td><strong>Firmware base</strong></td>
+            <td>An earlier 0.7.0 fork, which on this hardware never produced an ATR at all</td>
+            <td>Upstream <span class="m">0.9.1-22-*</span>, with the T=1 block layer applied on top</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="col">
+      <h3>What that adds up to</h3>
+      <p>
+        The result is a complete EMV transaction between a physical card in a desk-side
+        reader and a payment terminal: application selection, processing options, record
+        reads, and both GENERATE AC exchanges, ending in a card decision. The card first
+        requests online authorization; with no acquirer available in the test setup, the
+        transaction ultimately declines. This matches the behavior observed when the same
+        card is inserted directly into the terminal.
+      </p>
+      <p>
+        This has now been demonstrated through <strong>both terminal-facing configurations</strong>.
+        In the native case, the board speaks T=1 to the terminal and presents the card&#8217;s
+        rewritten ATR. In the second case, <span class="m">--synthetic-atr</span> presents
+        a T=0 face to a Verifone terminal while the real card remains on T=1 behind the
+        relay. Section 09 contains both traces; section 04 explains why the second
+        configuration is required for that terminal.
+      </p>
+      <p>
+        The T=1 implementation is a self-contained block layer covering LRC and CRC framing,
+        I-, R-, and S-blocks, sequence numbering, bidirectional chaining, IFS negotiation,
+        and RESYNCH, ABORT, and WTX handling. It depends only on
+        <span class="m">&lt;string.h&gt;</span> and its own header. That isolation allowed
+        it to survive a firmware rebase onto upstream without modification and makes the
+        block layer straightforward to exercise on a workstation without the board.
+      </p>
+
+      <h3>The character of the work</h3>
+      <p>
+        Three defects separated successful activation from a completed transaction, and
+        they shared an important characteristic: <strong>none produced a useful error
+        message</strong>. The terminal rejected an ATR even though every byte was
+        transmitted correctly. Responses were freed inside the firmware without a log.
+        Chained responses collided on the wire while the host logs still looked healthy.
+        The failures were isolated by reasoning from the expected wire behavior and by
+        using a direct-card control experiment to determine whether the terminal or the
+        relay was responsible.
+      </p>
+      <p>
+        A fourth issue was easier to spot but still prevented the transaction from working: 
+        EMV proprietary commands were classified as unknown, logged, and dropped. 
+        This issue is discussed in Section 05.
+      </p>
+      <p>
+        The sections that follow trace the implementation from activation through the ATR
+        rewrite, protocol selection, EMV APDU handling, T=1 block transport, and complete
+        transaction traces. The final section records what remains unverified on hardware.
+        The goal is to make the boundary between demonstrated behavior and remaining work
+        explicit.
+      </p>
+    </div>
+  </div>
+</section>
+
+<hr class="sec">
+
+<!-- ================================================================ -->
+<section id="overview" class="sheet">
+  <div class="rail">
+    <div class="secno">&#167; 02</div>
+    <div class="cite">ISO/IEC 7816-3<br>EMV Book 1 &#167;8.3</div>
+  </div>
+  <div class="col">
+    <h2>What the relay does and what is proven</h2>
+    <p>
+      A real card is connected to a PC/SC reader on a Linux host.
+      <span class="m">simtrace2-remsim</span> communicates with the reader over PC/SC and
+      forwards APDUs to a SIMtrace2 board. The board presents itself to the EMV terminal
+      at the electrical interface: VCC, clock, reset, and a single half-duplex I/O line.
+    </p>
+    <p>
+      <p>
+        </br>
+        <strong>Do the two sides of the relay really need to speak the same protocol?</strong>
+        </br>
+      </p>
+      The key observation is that they do not. The card can communicate using T=1, while the relay 
+      presents T=0 to the terminal. Because the relay operates on complete APDUs rather than 
+      transparently forwarding protocol characters, each side can remain in its own independent protocol domain.
+
+      The relay effectively decouples the two 
+      protocol domains by terminating one transport protocol, reconstructing the APDU, and 
+      issuing the corresponding transaction on the other side.
+
+    </p>
+    <p>
+      Both configurations have now carried a complete EMV transaction on hardware. The
+      status board below distinguishes hardware evidence from unit-test coverage; that
+      distinction is maintained throughout the document.
+    </p>
+  </div>
+
+  <div class="wide">
+    <div class="board">
+      <div class="cell">
+        <span class="pill ok">Confirmed</span>
+        <h5>Full EMV transaction over native T=1</h5>
+        <p>The board speaking T=1 to the terminal, carrying the card&#8217;s own rewritten ATR. Selection, GPO, record reads and both GENERATE AC exchanges, through to a card decision.</p>
+      </div>
+      <div class="cell">
+        <span class="pill ok">Confirmed</span>
+        <h5>Card-to-reader chaining on the wire</h5>
+        <p>A 131-byte record went out as five chained I-blocks, each advanced by the reader&#8217;s R-block. Both GENERATE AC commands arrived as single blocks, so the terminal was acting on the advertised <span class="m">TA3 = 0xFE</span>.</p>
+      </div>
+      <div class="cell">
+        <span class="pill ok">Confirmed</span>
+        <h5>Full EMV transaction, T=1 card behind a T=0 face</h5>
+        <p>Verifone terminal, Mastercard test card, <span class="m">--synthetic-atr</span>. PSE discovery, application selection, GPO, eight record reads, and both GENERATE AC exchanges.</p>
+      </div>
+      <div class="cell">
+        <span class="pill ok">Confirmed</span>
+        <h5>EMV proprietary class <span class="m">0x80</span></h5>
+        <p>All three class <span class="m">0x80</span> commands of a live transaction classified correctly, each <span class="m">Lc</span> matching the data phase that followed.</p>
+      </div>
+      <div class="cell">
+        <span class="pill ok">Confirmed</span>
+        <h5>Case-4 conversion across the mismatch</h5>
+        <p>The host holds the body a T=1 card returns all at once, announces it as <span class="m">61xx</span>, then answers the reader&#8217;s GET RESPONSE from that buffer.</p>
+      </div>
+      <div class="cell">
+        <span class="pill ok">Confirmed</span>
+        <h5>T=0 card emulation</h5>
+        <p>Regression-tested on hardware: 1054 APDUs relayed to an Android payment terminal with zero errors, including a full SIM initialization with writes.</p>
+      </div>
+      <div class="cell">
+        <span class="pill warn">Unproven</span>
+        <h5>Reader-to-card chaining</h5>
+        <p>IFSC is advertised as 254, so the longest command seen on a terminal, 45 bytes, still fits one block. The reassembly path has only ever run in unit tests.</p>
+      </div>
+      <div class="cell">
+        <span class="pill warn">Unproven</span>
+        <h5>Error recovery and IFS negotiation</h5>
+        <p>EDC errors, RESYNCH, ABORT and <span class="m">S(IFS)</span> have only ever run in unit tests. So has the CRC branch, since LRC is what real cards select.</p>
+      </div>
+      <div class="cell">
+        <span class="pill bad">Gap</span>
+        <h5>Waiting-time extension</h5>
+        <p><span class="m">S(WTX request)</span> is implemented and tested, but nothing in the T=1 state reaches it.</p>
+      </div>
+    </div>
+
+    <div class="col">
+      <div class="note">
+        <p>
+          <strong>Which face to present is a property of the terminal, not of the
+          card.</strong> Native T=1 is the direct path and it works. A terminal that
+          refuses an ATR naming T=15, as the Verifone in section 04 does, is served
+          instead by a T=0 face with the host converting case 4 on the way through. Both
+          reach a card decision. Keep the two straight when reading a log, because the
+          firmware state and the host code path differ completely between them.
+        </p>
+      </div>
+    </div>
+
+    <figure>
+      <div class="figbox">
+        <svg viewBox="0 0 1000 264" role="img" aria-label="The relay path: card to PC/SC reader to host daemon over USB to the SIMtrace2 board and on to the EMV terminal, with two independent ISO 7816-3 protocol domains that meet only at the host.">
+  <defs>
+    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"/>
+    </marker>
+    <marker id="ahr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--reader, #4257A0)"/>
+    </marker>
+  </defs>
+
+  <rect x="6" y="42" width="350" height="136" fill="currentColor" opacity=".045"/>
+  <rect x="656" y="42" width="338" height="136" fill="currentColor" opacity=".045"/>
+  <text x="181" y="64" text-anchor="middle" font-family="STIX Two Text, Times New Roman, serif" font-size="11.5" letter-spacing="1.4" fill="currentColor" opacity=".55">CARD-SIDE DOMAIN</text>
+  <text x="825" y="64" text-anchor="middle" font-family="STIX Two Text, Times New Roman, serif" font-size="11.5" letter-spacing="1.4" fill="currentColor" opacity=".55">TERMINAL-SIDE DOMAIN</text>
+
+  <g font-family="STIX Two Text, Times New Roman, serif" fill="currentColor">
+    <rect x="20" y="96" width="128" height="56" fill="var(--paper, #fff)" stroke="currentColor" stroke-width="1.3"/>
+    <text x="84" y="120" text-anchor="middle" font-size="14" font-weight="600">Bank card</text>
+    <text x="84" y="138" text-anchor="middle" font-size="11.5" font-style="italic" opacity=".6">T=1, real ATR</text>
+
+    <rect x="216" y="96" width="128" height="56" fill="var(--paper, #fff)" stroke="currentColor" stroke-width="1.3"/>
+    <text x="280" y="120" text-anchor="middle" font-size="14" font-weight="600">PC/SC reader</text>
+    <text x="280" y="138" text-anchor="middle" font-size="11.5" font-style="italic" opacity=".6">USB CCID</text>
+
+    <rect x="412" y="86" width="188" height="76" fill="var(--paper, #fff)" stroke="currentColor" stroke-width="2.2"/>
+    <text x="506" y="112" text-anchor="middle" font-size="14" font-weight="600">simtrace2-remsim</text>
+    <text x="506" y="130" text-anchor="middle" font-size="11.5" font-style="italic" opacity=".6">ATR rewrite &#183; APDU relay</text>
+    <text x="506" y="147" text-anchor="middle" font-size="11.5" font-style="italic" opacity=".6">class 0x80 &#183; case-4 conversion</text>
+
+    <rect x="668" y="96" width="128" height="56" fill="var(--paper, #fff)" stroke="currentColor" stroke-width="1.3"/>
+    <text x="732" y="120" text-anchor="middle" font-size="14" font-weight="600">SIMtrace2</text>
+    <text x="732" y="138" text-anchor="middle" font-size="11.5" font-style="italic" opacity=".6">cardem, SAM3S</text>
+
+    <rect x="864" y="96" width="120" height="56" fill="var(--paper, #fff)" stroke="currentColor" stroke-width="1.3"/>
+    <text x="924" y="120" text-anchor="middle" font-size="14" font-weight="600">EMV terminal</text>
+    <text x="924" y="138" text-anchor="middle" font-size="11.5" font-style="italic" opacity=".6">sees a card</text>
+  </g>
+
+  <g stroke="currentColor" stroke-width="1.3" fill="none" marker-end="url(#ah)">
+    <line x1="148" y1="124" x2="210" y2="124"/>
+    <line x1="344" y1="124" x2="406" y2="124"/>
+    <line x1="600" y1="124" x2="662" y2="124"/>
+  </g>
+  <line x1="796" y1="124" x2="858" y2="124" stroke="var(--reader, #4257A0)" stroke-width="2.2" fill="none" marker-end="url(#ahr)"/>
+
+  <g font-family="STIX Two Text, Times New Roman, serif" font-size="11.5" font-style="italic" fill="currentColor" opacity=".7" text-anchor="middle">
+    <text x="179" y="88">ISO 7816-3</text>
+    <text x="375" y="88">USB CCID</text>
+    <text x="631" y="88">USB</text>
+  </g>
+  <text x="827" y="88" font-family="STIX Two Text, Times New Roman, serif" font-size="11.5" font-style="italic" fill="var(--reader, #4257A0)" text-anchor="middle">ISO 7816-3</text>
+
+  <line x1="506" y1="162" x2="506" y2="196" stroke="currentColor" stroke-width="1" stroke-dasharray="3 3"/>
+  <text x="506" y="218" text-anchor="middle" font-family="STIX Two Text, Times New Roman, serif" font-size="13" fill="currentColor">the only place the two domains meet, and they need not match</text>
+  <text x="506" y="240" text-anchor="middle" font-family="STIX Two Text, Times New Roman, serif" font-size="12" font-style="italic" fill="currentColor" opacity=".62">both native T=1 and a T=1 card behind a T=0 face are proven on hardware</text>
+</svg>
+      </div>
+      <figcaption>
+        <b>The relay path.</b> Each ISO 7816-3 link negotiates its own protocol and timing
+        independently. Because the host reassembles whole APDUs before forwarding them, a
+        T=1 card can be presented over T=0, and the reverse is possible too.
+      </figcaption>
+    </figure>
+  </div>
+</section>
+
+<hr class="sec">
+
+<!-- ================================================================ -->
+<section id="activation" class="sheet">
+  <div class="rail">
+    <div class="secno">&#167; 03</div>
+    <div class="cite">ISO 7816-3 &#167;6.2<br>Cold reset and ATR</div>
+  </div>
+  <div class="col">
+    <h2>Activation: from VCC to a chosen protocol</h2>
+    <p>
+      The terminal drives the electrical activation sequence, and the board responds to
+      each transition through SAM3S interrupts. Card emulation is implemented as a state
+      machine rather than a polling loop.
+    </p>
+    <p>
+      The key decision occurs after the ATR is transmitted. The firmware evaluates the
+      ATR&#8217;s TD<sub>i</sub> chain to determine the protocol it has advertised, then
+      enters either the byte-oriented T=0 path or the block-oriented T=1 path.
+    </p>
+    <p>
+      Upstream went straight to <span class="m">ISO_S_WAIT_TPDU</span> here, because T=0
+      was the only option. This tree replaces that with
+      <span class="m">enter_data_phase()</span> and
+      <span class="m">data_phase_state()</span>, which read
+      <span class="m">atr_proto_mask</span> and pick the matching state.
+    </p>
+  </div>
+
+  <div class="wide">
+    <figure>
+      <div class="figbox">
+        <svg viewBox="0 0 1000 312" role="img" aria-label="Card emulation state machine: from waiting for power through clock, reset and ATR transmission, then branching into either the T=0 TPDU path or the T=1 block path, with an optional PPS negotiation above.">
+  <defs>
+    <marker id="ah2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"/>
+    </marker>
+    <marker id="ah2c" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--card, #2F7F72)"/>
+    </marker>
+  </defs>
+
+  <g font-family="IBM Plex Mono, Courier New, monospace" font-size="11.5" fill="currentColor">
+    <rect x="10" y="120" width="110" height="44" fill="var(--paper, #fff)" stroke="currentColor" stroke-width="1.3"/>
+    <text x="65" y="147" text-anchor="middle">WAIT_POWER</text>
+
+    <rect x="154" y="120" width="98" height="44" fill="var(--paper, #fff)" stroke="currentColor" stroke-width="1.3"/>
+    <text x="203" y="147" text-anchor="middle">WAIT_CLK</text>
+
+    <rect x="286" y="120" width="98" height="44" fill="var(--paper, #fff)" stroke="currentColor" stroke-width="1.3"/>
+    <text x="335" y="147" text-anchor="middle">WAIT_RST</text>
+
+    <rect x="418" y="120" width="98" height="44" fill="var(--paper, #fff)" stroke="currentColor" stroke-width="1.3"/>
+    <text x="467" y="147" text-anchor="middle">WAIT_ATR</text>
+
+    <rect x="550" y="120" width="90" height="44" fill="var(--paper, #fff)" stroke="currentColor" stroke-width="2.2"/>
+    <text x="595" y="147" text-anchor="middle" font-weight="600">IN_ATR</text>
+
+    <rect x="702" y="36" width="108" height="42" fill="var(--paper, #fff)" stroke="currentColor" stroke-width="1.3" stroke-dasharray="4 3"/>
+    <text x="756" y="62" text-anchor="middle">IN_PTS</text>
+
+    <rect x="830" y="118" width="156" height="48" fill="var(--paper, #fff)" stroke="currentColor" stroke-width="1.3"/>
+    <text x="908" y="138" text-anchor="middle">WAIT_TPDU</text>
+    <text x="908" y="155" text-anchor="middle" font-family="STIX Two Text, Times New Roman, serif" font-size="11" font-style="italic" opacity=".62">T=0, byte oriented</text>
+
+    <rect x="830" y="208" width="156" height="48" fill="var(--paper, #fff)" stroke="var(--card, #2F7F72)" stroke-width="2.2"/>
+    <text x="908" y="228" text-anchor="middle" fill="var(--card, #2F7F72)" font-weight="600">IN_T1</text>
+    <text x="908" y="245" text-anchor="middle" font-family="STIX Two Text, Times New Roman, serif" font-size="11" font-style="italic" fill="var(--card, #2F7F72)">block oriented</text>
+  </g>
+
+  <g stroke="currentColor" stroke-width="1.3" fill="none" marker-end="url(#ah2)">
+    <line x1="120" y1="142" x2="150" y2="142"/>
+    <line x1="252" y1="142" x2="282" y2="142"/>
+    <line x1="384" y1="142" x2="414" y2="142"/>
+    <line x1="516" y1="142" x2="546" y2="142"/>
+    <path d="M 595 120 L 595 57 L 698 57"/>
+    <path d="M 810 57 L 908 57 L 908 114"/>
+    <line x1="640" y1="142" x2="826" y2="142"/>
+  </g>
+  <path d="M 595 164 L 595 232 L 826 232" stroke="var(--card, #2F7F72)" stroke-width="2.2" fill="none" marker-end="url(#ah2c)"/>
+
+  <g font-family="STIX Two Text, Times New Roman, serif" font-size="12" font-style="italic" fill="currentColor" opacity=".72" text-anchor="middle">
+    <text x="135" y="134">VCC</text>
+    <text x="267" y="134">CLK</text>
+    <text x="399" y="134">RST</text>
+    <text x="531" y="134">t&#8322;</text>
+  </g>
+  <text x="605" y="102" font-family="IBM Plex Mono, Courier New, monospace" font-size="11" fill="currentColor" opacity=".72">0xFF</text>
+  <text x="617" y="222" font-family="STIX Two Text, Times New Roman, serif" font-size="12" font-style="italic" fill="var(--card, #2F7F72)">first TDi names T=1</text>
+
+  <text x="14" y="284" font-family="STIX Two Text, Times New Roman, serif" font-size="13" font-weight="600" fill="currentColor">PPS is validated, not echoed.</text>
+  <text x="14" y="304" font-family="STIX Two Text, Times New Roman, serif" font-size="12.5" fill="currentColor" opacity=".72">A proposal for a protocol the ATR did not offer leaves the card mute, as &#167;9.3 requires. The reader then falls back or resets.</text>
+</svg>
+      </div>
+      <figcaption>
+        <b>Activation and the protocol fork.</b> The dashed PPS state is optional and can be
+        entered from either data-phase state. <span class="m">0xFF</span> is unambiguous
+        because it is not a valid T=1 node address.
+      </figcaption>
+    </figure>
+
+    <div class="col">
+      <h3>The PPS check upstream left open</h3>
+      <p>
+        Upstream copied the reader&#8217;s proposal into the response and marked the spot
+        with a <span class="m">FIXME</span> reading <i>check if proposal matches
+        capabilities in ATR</i>. A reader could therefore propose T=1 to a firmware that
+        only spoke T=0 and be told yes.
+      </p>
+      <p>
+        The check is now in place. A proposal is accepted only if the protocol appears in
+        both <span class="m">SUPPORTED_PROTOCOLS</span> and the mask the ATR actually
+        announced. Otherwise the firmware logs the proposal, stays silent, and returns to
+        waiting for a fresh PPS, which is the behavior ISO 7816-3 &#167;9.3 prescribes.
+      </p>
+    </div>
+  </div>
+</section>
+
+<hr class="sec">
+
+<!-- ================================================================ -->
+<section id="atr" class="sheet">
+  <div class="rail">
+    <div class="secno">&#167; 04</div>
+    <div class="cite">ISO 7816-3 &#167;8.2<br>EMV Book 1 &#167;8.3<br>TA3 / TB3 / T=15</div>
+  </div>
+  <div class="col">
+    <h2>The ATR is rewritten before it is pushed</h2>
+    <p>
+      The card&#8217;s ATR is read over PC/SC and forwarded after rewriting rather than
+      copied verbatim. The emulation operates with one set of transmission parameters,
+      based on the ISO defaults and changed only by a successful PPS exchange. Interface
+      bytes that request timing the board cannot provide therefore cannot be forwarded
+      unchanged.
+    </p>
+    <p>
+      Forwarding <span class="m">TA1</span> can cause the reader to select a clock rate the
+      board cannot sustain. Forwarding <span class="m">TA2</span> can apply that mode
+      immediately, without giving PPS an opportunity to reject it. In either case, the
+      terminal observes framing errors rather than a usable card interface.
+    </p>
+
+    <h4>Dropped</h4>
+    <div class="tw">
+      <table>
+        <thead><tr><th>Byte</th><th>Promises</th><th>Firmware</th></tr></thead>
+        <tbody>
+          <tr><td class="m">TA1</td><td>F<sub>i</sub>/D<sub>i</sub>. <span class="m">0x96</span> asks for 16 clocks per etu, not 372</td><td>ignores it</td></tr>
+          <tr><td class="m">TB1</td><td>deprecated programming voltage</td><td>ignores it</td></tr>
+          <tr><td class="m">TC1</td><td>extra guard time between characters</td><td>ignores it</td></tr>
+          <tr><td class="m">TA2</td><td>specific mode: adopt TA1 at once, no PPS</td><td>ignores it</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h4>Kept, and why it matters</h4>
+    <p>
+      <span class="m">TA3</span> and <span class="m">TB3</span> look like more of the
+      same and are not. They are <em>protocol</em> parameters rather than electrical
+      ones. TA3 is the IFSC and TB3 is the BWI/CWI pair.
+    </p>
+    <div class="note bad">
+      <p>
+        <strong>EMV Book 1 &#167;8.3 requires TB3</strong> and rejects the card unless
+        <span class="m">BWI &le; 4</span> and <span class="m">CWI &le; 5</span>. With TB3
+        absent the terminal falls back to the ISO default
+        <span class="m">CWI = 13</span>, which is out of range, so it refuses the card
+        before a single block is exchanged. Nothing looks wrong at the character level.
+        The ATR is simply turned down.
+      </p>
+    </div>
+    <p>
+      The global bytes carried behind a TD<sub>i</sub> naming <span class="m">T=15</span>
+      are kept for the same reason: they are not electrical promises either. TA carries
+      the clock-stop indicator and the supply voltage classes the card accepts, and TB
+      carries power consumption. A modem running its SIM interface at 1.8 V has no reason
+      to accept a card that never declares it tolerates 1.8 V.
+    </p>
+  </div>
+
+  <div class="wide">
+    <figure>
+      <div class="figbox">
+        <h4 style="margin-top:0">As read from the card</h4>
+        <div class="atr">
+          <div class="byte keep">3B<small>TS</small></div>
+          <div class="byte">F8<small>T0</small></div>
+          <div class="byte drop">13<small>TA1</small></div>
+          <div class="byte drop">00<small>TB1</small></div>
+          <div class="byte drop">FF<small>TC1</small></div>
+          <div class="byte">91<small>TD1</small></div>
+          <div class="byte drop">01<small>TA2</small></div>
+          <div class="byte">31<small>TD2</small></div>
+          <div class="byte keep">FE<small>TA3</small></div>
+          <div class="byte">41<small>TB3</small></div>
+          <div class="byte keep">53<small>hist</small></div>
+          <div class="byte keep">4C<small>&nbsp;</small></div>
+          <div class="byte keep">4A<small>&nbsp;</small></div>
+          <div class="byte keep">26<small>&nbsp;</small></div>
+          <div class="byte keep">31<small>&nbsp;</small></div>
+          <div class="byte keep">23<small>&nbsp;</small></div>
+          <div class="byte keep">02<small>&nbsp;</small></div>
+          <div class="byte keep">01<small>&nbsp;</small></div>
+          <div class="byte">68<small>TCK</small></div>
+        </div>
+
+        <h4>As pushed to the terminal</h4>
+        <div class="atr">
+          <div class="byte keep">3B<small>TS</small></div>
+          <div class="byte add">88<small>T0</small></div>
+          <div class="byte add">81<small>TD1</small></div>
+          <div class="byte add">31<small>TD2</small></div>
+          <div class="byte keep">FE<small>TA3</small></div>
+          <div class="byte add">45<small>TB3</small></div>
+          <div class="byte keep">53<small>hist</small></div>
+          <div class="byte keep">4C<small>&nbsp;</small></div>
+          <div class="byte keep">4A<small>&nbsp;</small></div>
+          <div class="byte keep">26<small>&nbsp;</small></div>
+          <div class="byte keep">31<small>&nbsp;</small></div>
+          <div class="byte keep">23<small>&nbsp;</small></div>
+          <div class="byte keep">02<small>&nbsp;</small></div>
+          <div class="byte keep">01<small>&nbsp;</small></div>
+          <div class="byte add">E1<small>TCK</small></div>
+        </div>
+        <div class="legend">
+          <span><span class="sw" style="background:var(--ok)"></span> carried through unchanged</span>
+          <span><span class="sw" style="background:var(--brass)"></span> rebuilt or recomputed</span>
+          <span><span class="sw" style="background:var(--bad)"></span> dropped</span>
+        </div>
+      </div>
+      <figcaption>
+        <b>Nineteen bytes in, fifteen out.</b> The historical bytes survive untouched, so
+        the terminal still sees the real card&#8217;s identity.
+        <span class="m">TD1</span> becomes <span class="m">0x81</span> and
+        <span class="m">TD2</span> becomes <span class="m">0x31</span> because TA3 and TB3
+        are protocol-specific only from the third interface-byte group on. The T=1 link
+        has to be TD2 or later, which is exactly why real T=1 cards name T=1 twice.
+        <span class="m">TB3</span> is emitted as <span class="m">0x45</span>, meaning BWI
+        4 and CWI 5, the most generous pair EMV accepts, since the relay adds a USB and
+        PC/SC round trip to every exchange. TCK is recomputed over the new body. This card
+        never names T=15, so the global-byte path below does not apply to it.
+      </figcaption>
+    </figure>
+
+    <div class="col">
+      <h3>The T=15 conflict, and why EMV needs a synthetic ATR</h3>
+      <p>
+        A SIM ATR can name <span class="m">T=15</span> in its TD<sub>i</sub> chain. T=15 is
+        not a transmission protocol; it identifies subsequent interface bytes as global
+        parameters, including clock-stop behavior and supported supply-voltage classes.
+        The rewriter preserves those parameters and emits them behind a rebuilt
+        TD<sub>i</sub> chain where appropriate.
+      </p>
+      <p>
+        For the terminal configuration described here, EMV Book 1 &#167;8.3 permits
+        <strong>T=0 and T=1</strong>. A terminal that encounters T=15 in the TD<sub>i</sub>
+        chain may therefore reject the card before any APDU exchange begins.
+      </p>
+      <div class="note bad">
+        <p>
+          This creates a practical incompatibility between the SIM-side requirements and
+          this terminal. There is no single ATR representation that satisfies both
+          environments. <span class="m">--synthetic-atr</span> therefore presents
+          <span class="m">3B 00</span>, with no interface bytes, when the terminal requires
+          a minimal EMV-compatible ATR.
+        </p>
+      </div>
+
+      <h4>Measured against a Verifone terminal, in order</h4>
+      <div class="tw">
+        <table>
+          <thead><tr><th>ATR presented</th><th>Reached VCC and CLK with reset released</th><th class="num">APDUs</th></tr></thead>
+          <tbody>
+            <tr><td>rewritten, T=15 kept, <span class="m">TA3</span> dropped</td><td>never</td><td class="num">0</td></tr>
+            <tr><td><span class="m">--raw-atr</span>, <span class="m">TA1 = 0x96</span> forwarded</td><td>yes, cycling</td><td class="num">0</td></tr>
+            <tr><td>rewritten, T=15 kept, <span class="m">TA3</span> kept</td><td>yes, consistently</td><td class="num">0</td></tr>
+            <tr><td><strong><span class="m">--synthetic-atr</span>, <span class="m">3B 00</span></strong></td><td><strong>yes</strong></td><td class="num"><strong>all of them</strong></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>
+        Read that ladder carefully, because it says two things. Keeping TA3 and TB3 is
+        what got the terminal to hold the card powered and released instead of
+        deactivating it, so that fix is real. On this particular terminal it was still
+        not sufficient: as long as the chain named T=15, it exchanged nothing, and only
+        <span class="m">3B 00</span> produced a transaction.
+      </p>
+      <p>
+        The ladder is a property of this terminal, not of the rewrite. Against a terminal
+        that accepts the rewritten ATR, those same bytes carry <strong>native T=1</strong>
+        end to end, which is the first trace in section 09. The difference is entirely
+        T=15, and a card whose ATR never names it is unaffected either way.
+      </p>
+      <p>
+        <span class="m">--raw-atr</span> fails for the original reason the rewriter
+        exists. <span class="m">TA1 = 0x96</span> asks for 16 clock cycles per etu while
+        the emulation runs a fixed 372, so every byte is framed wrong.
+      </p>
+    </div>
+  </div>
+</section>
+
+<hr class="sec">
+
+<!-- ================================================================ -->
+<section id="emv" class="sheet">
+  <div class="rail">
+    <div class="secno">&#167; 05</div>
+    <div class="cite">apdu_dispatch.c<br>EMV Book 3<br>ISO 7816-4 cases</div>
+  </div>
+  <div class="col">
+    <h2>EMV support over T=0 and T=1</h2>
+    <p>
+      The previous sections focused on getting the interface onto the wire. This section
+      moves up one layer to the host, where complete APDUs are interpreted and relayed.
+      Two issues are critical here; without either fix, the EMV transaction cannot
+      complete regardless of the transport protocol.
+    </p>
+    <p>
+      The first is handling EMV&#8217;s proprietary command class. The second is translating
+      between T=0 and T=1 when the card and terminal use different protocols.
+    </p>
+  </div>
+
+  <div class="wide">
+    <div class="col">
+      <h3>The proprietary class <span class="m">0x80</span></h3>
+      <p>
+        Upstream classifies each command APDU with
+        <span class="m">osim_determine_apdu_case()</span>, which matches it against the
+        UICC/SIM class table. Every EMV proprietary <span class="m">CLA = 0x80</span>
+        command matches nothing there and comes back as <strong>case 0</strong>. Case 0
+        is not an ISO 7816-4 case at all. It is the table&#8217;s way of saying it does
+        not recognize the command.
+      </p>
+      <p>
+        The dispatcher treats that as an error, logs
+        <span class="m">Unknown APDU case 0</span>, and returns
+        <span class="m">-1</span>. The APDU is dropped and the exchange stalls. Three of
+        the commands in a routine EMV transaction are class <span class="m">0x80</span>,
+        and the first of them is GET PROCESSING OPTIONS, so that is where every
+        transaction stopped.
+      </p>
+      <p>
+        <span class="m">host/lib/apdu_dispatch.c</span> adds a case 0 arm that classifies
+        these directly.
+      </p>
+      <div class="tw">
+        <table>
+          <thead><tr><th>Command</th><th></th><th class="m">P3</th></tr></thead>
+          <tbody>
+            <tr><td class="m">80 A8 00 00 02 83 00</td><td>GET PROCESSING OPTIONS</td><td class="m">Lc</td></tr>
+            <tr><td class="m">80 CA 9F 36 05</td><td>GET DATA (ATC)</td><td class="m">Lc</td></tr>
+            <tr><td class="m">80 AE 80 00 1D</td><td>GENERATE AC, ARQC</td><td class="m">Lc</td></tr>
+            <tr><td class="m">80 AE 90 00 2B</td><td>GENERATE AC, ARQC with CDA</td><td class="m">Lc</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>
+        GENERATE AC encodes the requested cryptogram in <span class="m">P1</span>. Bits 7
+        and 6 select AAC, TC or ARQC, and bit 4 adds CDA. The four values that carry
+        command data are <span class="m">0x40</span>, <span class="m">0x50</span>,
+        <span class="m">0x80</span> and <span class="m">0x90</span>, and they take
+        <span class="m">P3</span> as <span class="m">Lc</span>. Any other non-zero
+        <span class="m">P1</span> on class <span class="m">0x80</span> has neither
+        command data nor expected data. When <span class="m">P1</span> is zero,
+        <span class="m">P3</span> is <span class="m">Lc</span>, which covers GET
+        PROCESSING OPTIONS and GET DATA above. Command data is then accumulated across USB
+        messages exactly as ISO cases 3 and 4 do.
+      </p>
+
+      <h4>What a live terminal produced</h4>
+      <div class="tw">
+        <table>
+          <thead><tr><th>Command</th><th class="m">P1</th><th>Branch</th><th class="num">Lc</th></tr></thead>
+          <tbody>
+            <tr><td><span class="m">80 A8 00 00 02</span> GET PROCESSING OPTIONS</td><td class="m">0x00</td><td>else</td><td class="num">2</td></tr>
+            <tr><td><span class="m">80 AE 90 00 2B</span> GENERATE AC, ARQC with CDA</td><td class="m">0x90</td><td>cryptogram</td><td class="num">43</td></tr>
+            <tr><td><span class="m">80 AE 00 00 1D</span> GENERATE AC, AAC</td><td class="m">0x00</td><td>else</td><td class="num">29</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>
+        Each classification was correct, and each <span class="m">Lc</span> matched the
+        data phase that followed. Verified against a Verifone terminal and a Mastercard
+        test card.
+      </p>
+
+      <h3>The same transaction over two different faces</h3>
+      <p>
+        The protocol toward the terminal and the protocol toward the card are set
+        independently, so the host has to reconcile them. There are two arrangements that
+        matter in practice.
+      </p>
+      <div class="tw">
+        <table>
+          <thead><tr><th style="width:20%">Face to terminal</th><th style="width:16%">Card</th><th>What the host does</th></tr></thead>
+          <tbody>
+            <tr>
+              <td><strong>T=0</strong><br><span class="pill ok">proven</span></td>
+              <td>T=0 or T=1</td>
+              <td>Reassembles TPDU fragments into a command APDU using procedure bytes, sends it over PC/SC, then feeds the response back as procedure bytes and a status word. When the card is T=1, the response arrives whole, so case 4 needs the conversion described below.</td>
+            </tr>
+            <tr>
+              <td><strong>T=1</strong><br><span class="pill ok">proven</span></td>
+              <td>T=0 or T=1</td>
+              <td>Receives the INF of each I-block, appends it to a reassembly buffer, and forwards the command once <span class="m">CEMU_DATA_F_FINAL</span> arrives. The response goes back in 32-byte chunks with the status word attached. No procedure bytes are involved in either direction.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>Case 4 across the mismatch</h3>
+      <p>
+        A case-4 command carries data to the card and expects data in return. Under T=0,
+        the reader expects the status word first and then issues GET RESPONSE for the
+        response body. A T=1 card has no procedure-byte exchange; the response body is
+        returned as part of the complete APDU that PC/SC provides to the host.
+      </p>
+      <p>
+        So when the reader asked for no data but the card returned some, the host holds
+        the body in a buffer and answers <span class="m">61 xx</span> with the length,
+        exactly as a T=0 card would. The reader then issues GET RESPONSE, and the host
+        serves it from that buffer rather than forwarding it to the card, which has
+        nothing left to give. If more remains it announces another
+        <span class="m">61 xx</span>, otherwise <span class="m">90 00</span>. Any other
+        command supersedes whatever was still held.
+      </p>
+      <div class="note bad">
+        <p>
+          <strong>The trap in the other direction.</strong> PC/SC readers commonly do not
+          perform the case-4 to GET RESPONSE conversion for you. A case-4 APDU with an
+          explicit <span class="m">Le</span> can still return
+          <span class="m">61 xx</span> with no body. Under T=0 relaying this is invisible,
+          because the reader issues its own GET RESPONSE and you relay it. Under T=1
+          whole APDUs are exchanged and there is no such round trip, so a host must run
+          the <span class="m">61</span> and <span class="m">6C</span> loop against the
+          card itself or lose every response body.
+        </p>
+      </div>
+
+      <h3>Selecting the protocol toward the card</h3>
+      <p>
+        <span class="m">host/lib/reader_pcsc.c</span> is a PC/SC backend that supports
+        both protocols and takes an explicit mask, so the reader and card negotiate
+        whichever they can agree on.
+        <span class="m">-T</span> or <span class="m">--card-proto</span> pins it to
+        <span class="m">t0</span>, <span class="m">t1</span> or
+        <span class="m">auto</span>, and <span class="m">auto</span> is the default. This
+        setting has no bearing on what is presented to the terminal.
+      </p>
+    </div>
+  </div>
+</section>
+
+<hr class="sec">
+
+<!-- ================================================================ -->
+<section id="block" class="sheet">
+  <div class="rail">
+    <div class="secno">&#167; 06</div>
+    <div class="cite">ISO 7816-3 &#167;11<br>Block layer</div>
+  </div>
+  <div class="col">
+    <h2>The T=1 block layer</h2>
+    <p>
+      <span class="m">card_emu_t1.c</span> is self-contained. It includes
+      <span class="m">&lt;string.h&gt;</span> and its own header, nothing else. It has no
+      hardware or USB dependency, which is why it survived a firmware rebase onto
+      upstream <span class="m">0.9.1-22-*</span> without a single edit, and why it
+      can be unit-tested on a workstation.
+    </p>
+    <p>
+      Every block has the same five fields. Only the PCB changes what the block means.
+    </p>
+  </div>
+
+  <div class="wide">
+    <figure>
+      <div class="figbox">
+        <svg viewBox="0 0 1000 176" role="img" aria-label="T=1 block anatomy: node address, protocol control byte, length, up to 254 information bytes, and a one or two byte error detection code; with the bit layout of the three PCB forms.">
+          <g font-family="IBM Plex Mono, Courier New, monospace" font-size="12" fill="currentColor">
+            <rect x="16" y="20" width="96" height="44" fill="none" stroke="currentColor" stroke-width="1.4"/>
+            <text x="64" y="41" text-anchor="middle" font-weight="600">NAD</text>
+            <text x="64" y="56" text-anchor="middle" font-size="10" opacity=".62">1 byte</text>
+
+            <rect x="118" y="20" width="96" height="44" fill="none" stroke="var(--brass, #A07C3A)" stroke-width="2.4"/>
+            <text x="166" y="41" text-anchor="middle" font-weight="600" fill="var(--brass, #A07C3A)">PCB</text>
+            <text x="166" y="56" text-anchor="middle" font-size="10" fill="var(--brass, #A07C3A)">1 byte</text>
+
+            <rect x="220" y="20" width="96" height="44" fill="none" stroke="currentColor" stroke-width="1.4"/>
+            <text x="268" y="41" text-anchor="middle" font-weight="600">LEN</text>
+            <text x="268" y="56" text-anchor="middle" font-size="10" opacity=".62">1 byte</text>
+
+            <rect x="322" y="20" width="490" height="44" fill="none" stroke="currentColor" stroke-width="1.4" stroke-dasharray="5 3"/>
+            <text x="567" y="41" text-anchor="middle" font-weight="600">INF</text>
+            <text x="567" y="56" text-anchor="middle" font-size="10" opacity=".62">0 to 254 bytes &middot; LEN = 0xFF is reserved</text>
+
+            <rect x="818" y="20" width="166" height="44" fill="none" stroke="currentColor" stroke-width="1.4"/>
+            <text x="901" y="41" text-anchor="middle" font-weight="600">EDC</text>
+            <text x="901" y="56" text-anchor="middle" font-size="10" opacity=".62">LRC 1 B or CRC 2 B</text>
+          </g>
+
+          <line x1="16" y1="80" x2="984" y2="80" stroke="currentColor" stroke-width="1" opacity=".35"/>
+
+          <g font-family="IBM Plex Mono, Courier New, monospace" font-size="11.5" fill="currentColor">
+            <text x="16" y="104" font-weight="600" fill="var(--brass, #A07C3A)">PCB</text>
+
+            <text x="16" y="128">I-block</text>
+            <text x="112" y="128" opacity=".8">0</text>
+            <text x="132" y="128" fill="var(--card, #2F7F72)" font-weight="600">N(S)</text>
+            <text x="184" y="128" fill="var(--brass, #A07C3A)" font-weight="600">M</text>
+            <text x="206" y="128" opacity=".55">0 0 0 0 0</text>
+            <text x="316" y="128" opacity=".72">carries application data; M means more follows</text>
+
+            <text x="16" y="150">R-block</text>
+            <text x="112" y="150" opacity=".8">1 0 0</text>
+            <text x="164" y="150" fill="var(--card, #2F7F72)" font-weight="600">N(R)</text>
+            <text x="216" y="150" opacity=".55">e e e e</text>
+            <text x="316" y="150" opacity=".72">acknowledge or ask again; e = 0 none, 1 EDC, 2 other</text>
+
+            <text x="16" y="172">S-block</text>
+            <text x="112" y="172" opacity=".8">1 1</text>
+            <text x="148" y="172" fill="var(--brass, #A07C3A)" font-weight="600">R</text>
+            <text x="170" y="172" opacity=".55">t t t t t</text>
+            <text x="316" y="172" opacity=".72">RESYNCH, IFS, ABORT, WTX; R marks the response</text>
+          </g>
+        </svg>
+      </div>
+      <figcaption>
+        <b>Block anatomy and the three PCB forms.</b> The card originates every block with
+        <span class="m">NAD = 0x00</span>, meaning no node addressing, which is what
+        essentially every real card does. The sequence numbers
+        <span class="m">N(S)</span> and <span class="m">N(R)</span> are single bits that
+        alternate.
+      </figcaption>
+    </figure>
+
+    <div class="col">
+      <h3>What is implemented, and how far it has been exercised</h3>
+      <p>
+        There are 14 unit tests in
+        <span class="m">firmware/test/card_emu_t1_tests.c</span>, one for each capability
+        below, and they run on a workstation with no board attached. The third column says
+        how far each has been pushed beyond that: <em>on hardware</em> means a real reader
+        drove it during the native T=1 transaction in section 09.
+      </p>
+      <div class="tw">
+        <table>
+          <thead><tr><th>Capability</th><th>Covered by</th><th>State</th></tr></thead>
+          <tbody>
+            <tr><td>Block framing, LRC and CRC-16/CCITT-FALSE</td><td class="m">test_lrc, test_crc_len, test_crc_roundtrip</td><td><span class="pill ok">tested</span></td></tr>
+            <tr><td>I / R / S blocks, sequence numbering</td><td class="m">test_simple_exchange</td><td><span class="pill ok">on hardware</span></td></tr>
+            <tr><td>Card to reader chaining</td><td class="m">test_chained_response</td><td><span class="pill ok">on hardware</span></td></tr>
+            <tr><td>Reader to card chaining</td><td class="m">test_chained_command</td><td><span class="pill warn">unit tests only</span></td></tr>
+            <tr><td>R-blocks: EDC error, sequence error, retransmit</td><td class="m">test_edc_error, test_sequence_error, test_retransmit</td><td><span class="pill warn">unit tests only</span></td></tr>
+            <tr><td>IFS negotiation</td><td class="m">test_ifs_negotiation</td><td><span class="pill warn">unit tests only</span></td></tr>
+            <tr><td>RESYNCH and ABORT</td><td class="m">test_resynch_and_abort</td><td><span class="pill warn">unit tests only</span></td></tr>
+            <tr><td>Bounds: reserved <span class="m">LEN=FF</span>, 254-byte INF</td><td class="m">test_reserved_len, test_max_size_block</td><td><span class="pill ok">tested</span></td></tr>
+            <tr><td>WTX request</td><td class="m">test_wtx</td><td><span class="pill bad">unreachable</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>
+        The last row is not a coverage gap. <span class="m">t1_tx_wtx_request()</span>
+        works and its test passes, but nothing in the firmware calls it. Section 12
+        explains why.
+      </p>
+    </div>
+  </div>
+</section>
+
+<hr class="sec">
+
+<!-- ================================================================ -->
+<section id="turns" class="sheet">
+  <div class="rail">
+    <div class="secno">&#167; 07</div>
+    <div class="cite">ISO 7816-3 &#167;11.6<br>Chaining and turn-taking</div>
+  </div>
+  <div class="col">
+    <h2>Turn-taking on a shared wire</h2>
+    <p>
+      This is where the relay differs most from a conventional card. A real card generates
+      its response locally and transmits it. Here, the response arrives from the host
+      over USB and may already be divided into several chunks before the firmware
+      transmits it.
+    </p>
+    <p>
+      A response longer than IFSD must be chained: the card sends an I-block with the
+      more bit set, waits for the reader&#8217;s R-block, and then sends the next block.
+      The host does not manage that turn-taking; it provides the complete response, while
+      the firmware is responsible for sequencing the blocks on the wire.
+    </p>
+    <p>
+      In the observed transaction, a 131-byte record becomes five blocks. Because the
+      card and reader share a single half-duplex I/O line, the firmware must never begin
+      transmitting while the reader is still driving the line.
+    </p>
+  </div>
+
+  <div class="wide">
+    <figure>
+      <div class="figbox">
+        <svg viewBox="0 0 1000 384" role="img" aria-label="Two timelines of the shared half-duplex line. Without the gate, an unasked response chunk overlaps in time with the reader's R-block and both sides drive the line at once. With the gate, each chunk waits for its R-block and the line alternates cleanly.">
+  <defs>
+    <marker id="ah3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"/>
+    </marker>
+  </defs>
+
+  <!-- ============================ BEFORE ============================ -->
+  <text x="14" y="24" font-family="STIX Two Text, Times New Roman, serif" font-size="13.5" font-weight="600" letter-spacing=".5" fill="var(--bad, #9E4030)">WITHOUT THE GATE: the transmitter is enabled on every USB arrival</text>
+
+  <text x="14" y="60" font-family="STIX Two Text, Times New Roman, serif" font-size="12" font-style="italic" fill="currentColor" opacity=".6">USB in</text>
+  <g stroke="currentColor" stroke-width="1.1" opacity=".5" marker-end="url(#ah3)">
+    <line x1="170" y1="40" x2="170" y2="64"/>
+    <line x1="206" y1="40" x2="206" y2="64"/>
+    <line x1="242" y1="40" x2="242" y2="64"/>
+    <line x1="278" y1="40" x2="278" y2="64"/>
+    <line x1="314" y1="40" x2="314" y2="64"/>
+  </g>
+  <text x="346" y="58" font-family="STIX Two Text, Times New Roman, serif" font-size="12" font-style="italic" fill="currentColor" opacity=".6">all five chunks arrive back to back</text>
+
+  <text x="14" y="106" font-family="STIX Two Text, Times New Roman, serif" font-size="12" font-style="italic" fill="currentColor" opacity=".6">I/O line</text>
+  <line x1="96" y1="114" x2="470" y2="114" stroke="currentColor" stroke-width="1" opacity=".3"/>
+
+  <rect x="160" y="88" width="150" height="26" fill="var(--card-soft, #E8F3F1)" stroke="var(--card, #2F7F72)" stroke-width="1.4"/>
+  <text x="235" y="106" text-anchor="middle" font-family="IBM Plex Mono, Courier New, monospace" font-size="10.5" fill="var(--card, #2F7F72)">I(N(S)=1,M) chunk 1</text>
+
+  <rect x="310" y="88" width="150" height="26" fill="var(--card-soft, #E8F3F1)" stroke="var(--card, #2F7F72)" stroke-width="1.4"/>
+  <text x="385" y="106" text-anchor="middle" font-family="IBM Plex Mono, Courier New, monospace" font-size="10.5" fill="var(--card, #2F7F72)">chunk 2, unasked</text>
+
+  <rect x="330" y="118" width="110" height="26" fill="var(--reader-soft, #EAEEF8)" stroke="var(--reader, #4257A0)" stroke-width="1.4"/>
+  <text x="385" y="136" text-anchor="middle" font-family="IBM Plex Mono, Courier New, monospace" font-size="10.5" fill="var(--reader, #4257A0)">R(N(R)=0)</text>
+
+  <rect x="304" y="82" width="162" height="68" fill="none" stroke="var(--bad, #9E4030)" stroke-width="1.6" stroke-dasharray="4 3"/>
+
+  <text x="492" y="100" font-family="STIX Two Text, Times New Roman, serif" font-size="13" font-weight="600" fill="var(--bad, #9E4030)">collision: both sides drive the line</text>
+  <text x="492" y="120" font-family="STIX Two Text, Times New Roman, serif" font-size="12.5" fill="currentColor" opacity=".72">and enabling TX resets the USART mid-block</text>
+  <text x="492" y="140" font-family="STIX Two Text, Times New Roman, serif" font-size="12.5" fill="currentColor" opacity=".72">neither side records an error</text>
+
+  <text x="96" y="180" font-family="STIX Two Text, Times New Roman, serif" font-size="12.5" fill="currentColor" opacity=".8">The reader retries, gives up and resets. Throughout, the host log shows a flawless exchange.</text>
+
+  <line x1="14" y1="206" x2="986" y2="206" stroke="currentColor" stroke-width="1" opacity=".22"/>
+
+  <!-- ============================= AFTER ============================= -->
+  <text x="14" y="238" font-family="STIX Two Text, Times New Roman, serif" font-size="13.5" font-weight="600" letter-spacing=".5" fill="var(--ok, #2A6B4A)">WITH THE GATE: a chunk goes out only when the reader is waiting on us</text>
+
+  <text x="14" y="274" font-family="STIX Two Text, Times New Roman, serif" font-size="12" font-style="italic" fill="currentColor" opacity=".6">USB in</text>
+  <g stroke="currentColor" stroke-width="1.1" opacity=".5" marker-end="url(#ah3)">
+    <line x1="170" y1="254" x2="170" y2="278"/>
+    <line x1="206" y1="254" x2="206" y2="278"/>
+    <line x1="242" y1="254" x2="242" y2="278"/>
+    <line x1="278" y1="254" x2="278" y2="278"/>
+    <line x1="314" y1="254" x2="314" y2="278"/>
+  </g>
+  <text x="346" y="272" font-family="STIX Two Text, Times New Roman, serif" font-size="12" font-style="italic" fill="currentColor" opacity=".6">chunks 2 through 5 wait in the queue</text>
+
+  <text x="14" y="320" font-family="STIX Two Text, Times New Roman, serif" font-size="12" font-style="italic" fill="currentColor" opacity=".6">I/O line</text>
+  <line x1="96" y1="328" x2="984" y2="328" stroke="currentColor" stroke-width="1" opacity=".3"/>
+
+  <g font-family="IBM Plex Mono, Courier New, monospace" font-size="10.5">
+    <rect x="160" y="302" width="128" height="26" fill="var(--card-soft, #E8F3F1)" stroke="var(--card, #2F7F72)" stroke-width="1.4"/>
+    <text x="224" y="320" text-anchor="middle" fill="var(--card, #2F7F72)">I(1,M) chunk 1</text>
+
+    <rect x="292" y="302" width="92" height="26" fill="var(--reader-soft, #EAEEF8)" stroke="var(--reader, #4257A0)" stroke-width="1.4"/>
+    <text x="338" y="320" text-anchor="middle" fill="var(--reader, #4257A0)">R(N(R)=0)</text>
+
+    <rect x="388" y="302" width="128" height="26" fill="var(--card-soft, #E8F3F1)" stroke="var(--card, #2F7F72)" stroke-width="1.4"/>
+    <text x="452" y="320" text-anchor="middle" fill="var(--card, #2F7F72)">I(0,M) chunk 2</text>
+
+    <rect x="520" y="302" width="92" height="26" fill="var(--reader-soft, #EAEEF8)" stroke="var(--reader, #4257A0)" stroke-width="1.4"/>
+    <text x="566" y="320" text-anchor="middle" fill="var(--reader, #4257A0)">R(N(R)=1)</text>
+
+    <rect x="616" y="302" width="128" height="26" fill="var(--card-soft, #E8F3F1)" stroke="var(--card, #2F7F72)" stroke-width="1.4"/>
+    <text x="680" y="320" text-anchor="middle" fill="var(--card, #2F7F72)">I(1,M) chunk 3</text>
+
+    <text x="764" y="320" text-anchor="middle" fill="currentColor" opacity=".5">&#8230;</text>
+
+    <rect x="794" y="302" width="156" height="26" fill="var(--card-soft, #E8F3F1)" stroke="var(--card, #2F7F72)" stroke-width="2.2"/>
+    <text x="872" y="320" text-anchor="middle" fill="var(--card, #2F7F72)" font-weight="600">I(0) chunk 5, final</text>
+  </g>
+
+  <text x="96" y="366" font-family="STIX Two Text, Times New Roman, serif" font-size="12.5" fill="currentColor" opacity=".8">The line alternates cleanly: only one side drives it at a time, which is the whole contract of half duplex.</text>
+</svg>
+      </div>
+      <figcaption>
+        <b>The defect drawn on the wire.</b> Both timelines show the same shared I/O line
+        carrying the same 131-byte record. The difference is one flag,
+        <span class="m">ch-&gt;t1_owe_reader</span>, deciding whether an arriving chunk may
+        be transmitted now or must wait to be pulled by the reader&#8217;s next R-block.
+      </figcaption>
+      <div class="legend">
+        <span><span class="sw" style="background:var(--card)"></span> card drives the line</span>
+        <span><span class="sw" style="background:var(--reader)"></span> reader drives the line</span>
+      </div>
+    </figure>
+
+    <div class="col">
+      <h3>The gate, in code</h3>
+      <p>
+        The T=0 arm of the same switch had always been conditional. The T=1 arm was not,
+        and a T=1 response is the only kind that arrives as several messages.
+      </p>
+<pre><i>/* card_emu_have_new_uart_tx() */</i>
+case ISO_S_IN_TPDU:
+    switch (ch-&gt;tpdu.state) {
+    case TPDU_S_WAIT_TX:
+    case TPDU_S_WAIT_PB:   <i>// only when we owe data</i>
+        card_emu_uart_enable(ch-&gt;uart_chan, ENABLE_TX);
+    ...
+
+case ISO_S_IN_T1:
+<b>-   card_emu_uart_enable(ch-&gt;uart_chan, ENABLE_TX);</b>
+<u>+   if (ch-&gt;t1_owe_reader &amp;&amp; !t1_tx_pending(&amp;ch-&gt;t1))</u>
+<u>+       card_emu_uart_enable(ch-&gt;uart_chan, ENABLE_TX);</u>
+    break;</pre>
+      <p>
+        The flag is set when a complete command goes to the host, and again when an
+        R-block asks for the next chunk. It is cleared the moment a chunk is taken off the
+        queue. Because <span class="m">tx_byte_t1()</span> consults it too, a chunk cannot
+        reach the line out of turn whichever path runs. And if the R-block arrives before
+        the host has delivered the chunk it asks for, that chunk goes out the instant it
+        lands rather than stalling.
+      </p>
+      <div class="note">
+        <p>
+          <strong>How this is held in place.</strong> The fix is what let the 131-byte
+          record in section 09 go out as five chained blocks against a real reader. It is
+          kept honest by
+          <span class="m">test_t1_response_chunks_arrive_together()</span>, which queues
+          an entire response up front and asserts that the card stays silent after the
+          first block until the R-block arrives. That test exists because the original
+          harness could not have caught this, for reasons in section 10.
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<hr class="sec">
+
+<!-- ================================================================ -->
+<section id="usb" class="sheet">
+  <div class="rail">
+    <div class="secno">&#167; 08</div>
+    <div class="cite">simtrace_prot.h<br>MSGC_CARDEM</div>
+  </div>
+  <div class="col">
+    <h2>The USB message plane</h2>
+    <p>
+      The host and firmware exchange framed messages over bulk endpoints, with an interrupt
+      endpoint carrying status information. A small set of message types carries the
+      relay traffic, while flags determine how each payload should be interpreted.
+    </p>
+  </div>
+
+  <div class="wide">
+    <div class="tw">
+      <table>
+        <thead><tr><th>Message</th><th>Direction</th><th>Carries</th></tr></thead>
+        <tbody>
+          <tr><td class="m">DO_CEMU_RX_DATA</td><td>firmware to host</td><td>Bytes received from the reader. For T=1, the INF of one I-block.</td></tr>
+          <tr><td class="m">DT_CEMU_TX_DATA</td><td>host to firmware</td><td>A response to transmit. For T=1, one chunk, which becomes exactly one I-block.</td></tr>
+          <tr><td class="m">DT_CEMU_SET_ATR</td><td>host to firmware</td><td>The rewritten ATR, installed before activation.</td></tr>
+          <tr><td class="m">DT_CEMU_CARDINSERT</td><td>host to firmware</td><td>Card presence, which <span class="m">--auto-reinit</span> toggles to start a fresh session.</td></tr>
+          <tr><td class="m">BD_CEMU_STATUS</td><td>firmware to host</td><td>VCC, CLK, RST, F<sub>i</sub>/D<sub>i</sub> and waiting time. Batched on the interrupt endpoint.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="col">
+      <h4>Flags on a data message</h4>
+      <div class="tw">
+        <table>
+          <thead><tr><th>Flag</th><th class="m">Value</th><th>Meaning</th></tr></thead>
+          <tbody>
+            <tr><td class="m">CEMU_DATA_F_TPDU_HDR</td><td class="m">0x01</td><td>T=0: payload is a five-byte TPDU header</td></tr>
+            <tr><td class="m">CEMU_DATA_F_FINAL</td><td class="m">0x02</td><td>last piece. For T=1 it clears the chaining bit</td></tr>
+            <tr><td class="m">CEMU_DATA_F_PB_AND_TX</td><td class="m">0x04</td><td>T=0: procedure byte, then the card transmits</td></tr>
+            <tr><td class="m">CEMU_DATA_F_PB_AND_RX</td><td class="m">0x08</td><td>T=0: procedure byte, then the card receives</td></tr>
+            <tr><td class="m">CEMU_DATA_F_T1_BLOCK</td><td class="m">0x10</td><td>T=1: payload is block INF, not a TPDU fragment</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>The T=1 contract, if you write your own host</h3>
+      <p>
+        The firmware owns EDC, sequence numbers, R-blocks and S-blocks. The host supplies
+        and consumes <strong>INF only</strong>, never raw blocks. NAD, PCB, LEN and the
+        EDC never cross USB. Three details are easy to get wrong.
+      </p>
+      <div class="tw">
+        <table>
+          <thead><tr><th style="width:30%">Rule</th><th>Why</th></tr></thead>
+          <tbody>
+            <tr>
+              <td><strong>Chunk responses at 32 bytes</strong></td>
+              <td><span class="m">T1_HOST_CHUNK</span> is 32 because <span class="m">T1_DEFAULT_IFS</span> is 32, and <span class="m">t1_tx_inf()</span> rejects anything larger. The firmware logs the rejection and drops the chunk, so an oversized write is silently lost. The negotiated IFSD is never reported back over USB, so 32 is the only value a host can safely assume even after a successful <span class="m">S(IFS)</span> exchange. Push all chunks back to back; the firmware releases them one per reader acknowledgement and there is no per-chunk ack to wait for.</td>
+            </tr>
+            <tr>
+              <td><strong>Do not strip the status word</strong></td>
+              <td>Under T=0 the host splits SW1SW2 off the response. Under T=1 it must not. The status word is the tail of the response APDU and the reader&#8217;s own T=1 stack consumes it.</td>
+            </tr>
+            <tr>
+              <td><strong>A non-final block gets no reply</strong></td>
+              <td>When <span class="m">CEMU_DATA_F_FINAL</span> is clear, append to the reassembly buffer and return without sending anything. The firmware answers a chained I-block itself with an R-block.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="note bad">
+        <p>
+          <strong>The gate that silently ate every response.</strong>
+          <span class="m">dispatch_usb_command_cardem()</span> drops a
+          <span class="m">TX_DATA</span> message when
+          <span class="m">card_emu_ch_ready()</span> says the channel is not ready. It
+          calls <span class="m">usb_buf_free(msg)</span> with no log and no error to the
+          host. That helper enumerated the T=0 data-phase states and predated T=1, so
+          <span class="m">ISO_S_IN_T1</span> fell through to its
+          <span class="m">default:</span> and every T=1 response was discarded inside the
+          firmware. The host had sent it, the card fell silent, and the reader waited out
+          BWT and reset. <span class="m">ISO_S_IN_T1</span> is now in the ready list, with
+          a comment saying why.
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<hr class="sec">
+
+<!-- ================================================================ -->
+<section id="trace" class="sheet">
+  <div class="rail">
+    <div class="secno">&#167; 09</div>
+    <div class="cite">EMV Book 3<br>Transaction flow<br>Two runs, two faces</div>
+  </div>
+  <div class="col">
+    <h2>Two transactions, as they actually ran</h2>
+    <p>
+      Both runs reached a card decision. The key difference is the protocol and ATR presented
+      to the terminal. Reading the commands in sequence exposes the decisions made by the
+      EMV kernel as the transaction progresses.
+    </p>
+    <p>
+      Sensitive card data is intentionally omitted. Primary account numbers, Track 2 data,
+      and the cardholder name are redacted from the traces below.
+    </p>
+  </div>
+
+  <div class="wide">
+    <div class="col">
+      <h3>Run one: native T=1, the card&#8217;s rewritten ATR</h3>
+      <p>
+        The board negotiated T=1 with the terminal and the block layer carried every
+        exchange. This is the trace the capability table in section 06 refers to when it
+        says <em>on hardware</em>.
+      </p>
+    </div>
+
+<pre><span class="rd">&rarr; 00 a4 04 00 0e 31 50 41 59 2e 53 59 53 2e 44 44 46 30 31 00</span>   <i>SELECT 1PAY.SYS.DDF01</i>
+<span class="cd">&larr; 6f 1a 84 0e ... a5 08 88 01 01 5f 2d 02 65 6e 90 00</span>          <i>FCI, directory is at SFI 1</i>
+
+<span class="rd">&rarr; 00 b2 01 0c 00</span>                                             <i>READ RECORD 1, SFI 1</i>
+<span class="cd">&larr; 70 1b 61 19 4f 07 a0 00 00 00 03 10 10 50 0b ... 90 00</span>      <i>AID a0000000031010, VISA CREDIT</i>
+
+<span class="rd">&rarr; 00 b2 02 0c 00</span>                                             <i>READ RECORD 2, SFI 1</i>
+<span class="cd">&larr; 6a 83</span>                                                       <i>end of directory, expected</i>
+
+<span class="rd">&rarr; 00 a4 04 00 07 a0 00 00 00 03 10 10 00</span>                     <i>SELECT the AID</i>
+<span class="cd">&larr; 6f 20 84 07 ... 87 01 01 90 00</span>                              <i>36 B, chained over 2 blocks</i>
+
+<span class="rd">&rarr; 80 a8 00 00 02 83 00 00</span>                                    <i>GET PROCESSING OPTIONS   [CLA 0x80]</i>
+<span class="cd">&larr; 80 06 18 00 08 02 03 00 90 00</span>                              <i>AIP 1800, AFL 08 02 03 00</i>
+                                                          <i>   SFI 1, records 2 to 3, 0 for offline auth</i>
+
+<span class="rd">&rarr; 00 b2 02 0c 00</span>                                             <i>READ RECORD 2</i>
+<span class="cd">&larr; 70 23 57 13 ... 5f 20 0b ... 90 00</span>                         <i>track 2 and name, 2 blocks</i>
+
+<span class="rd">&rarr; 00 b2 03 0c 00</span>                                             <i>READ RECORD 3</i>
+<span class="cd">&larr; 70 7f 5a 08 ... 8c 15 ... 8d 19 ... 96 90 00</span>                <i>131 B, chained over 5 blocks</i>
+                                                          <i>   CDOL1 (8c) asks for 29 bytes</i>
+
+<span class="rd">&rarr; 80 ae 80 00 1d 00 00 00 00 05 ... 43 00</span>                    <i>GENERATE AC, P1=80, 35 B, one block</i>
+<span class="cd">&larr; 80 12 <u>80</u> 00 1a ed 4a 80 8f ... 90 00</span>                       <i>CID 0x80 = ARQC: go online</i>
+
+<span class="rd">&rarr; 80 ae 00 00 27 5a 33 00 00 00 00 05 ... 00 00 00</span>            <i>GENERATE AC, P1=00, 45 B, one block</i>
+<span class="cd">&larr; 80 12 <u>00</u> 00 1a 5c bf 7f 7c ... 90 00</span>                       <i>CID 0x00 = AAC: declined</i></pre>
+
+    <div class="col">
+      <div class="note good">
+        <p>
+          <strong>The decline is the expected outcome.</strong> The card returned a genuine
+          ARQC asking for online authorization. With no acquirer to reach, the terminal
+          issued a second GENERATE AC requesting an AAC and the card declined. That is
+          precisely what the same card does inserted directly into the same terminal.
+          Reaching a decision is the success condition, not the decision itself.
+        </p>
+      </div>
+      <p>
+        Two details in that trace are worth pulling out. The 131-byte record went out as
+        <strong>five chained I-blocks</strong>, each one released by the reader&#8217;s
+        R-block, which is the turn-taking of section 07 working on a real wire. And both
+        GENERATE AC commands, 35 and 45 bytes, arrived as <strong>single blocks</strong>,
+        which proves the terminal was acting on the <span class="m">TA3 = 0xFE</span>
+        IFSC the rewritten ATR advertises. For the same reason, reader-to-card chaining
+        stayed unexercised: ordinary EMV commands never need it.
+      </p>
+
+      <h3>Run two: T=0 face, Verifone terminal</h3>
+      <p>
+        A Verifone terminal will not accept an ATR whose TD<sub>i</sub> chain names T=15,
+        and section 04 has the ladder that establishes it. Relaying to that terminal means
+        <span class="m">--synthetic-atr</span>, so the board presents T=0 while the card
+        behind it stays on T=1 and the host converts between them. Mastercard test card.
+      </p>
+    </div>
+
+<pre><span class="rd">&rarr; SELECT 1PAY.SYS.DDF01</span>                    <span class="cd">&larr; 61 20, then FCI on GET RESPONSE</span>
+<span class="rd">&rarr; READ RECORD, PSE directory</span>              <span class="cd">&larr; six Mastercard applications</span>
+<span class="rd">&rarr; SELECT a0000000041010</span>                   <span class="cd">&larr; 61 3E, then FCI on GET RESPONSE</span>
+
+<span class="rd">&rarr; 80 A8 GET PROCESSING OPTIONS</span>           <span class="cd">&larr; AIP + AFL</span>            <i>[CLA 0x80]</i>
+<span class="rd">&rarr; READ RECORD &times; 8 across the AFL</span>        <span class="cd">&larr; PAN, track 2, CVM list, certificates</span>
+
+<span class="rd">&rarr; 80 AE GENERATE AC, P1 = 0x90</span>           <span class="cd">&larr; 9F27 = <u>80</u>, ARQC with CDA</span>   <i>[CLA 0x80]</i>
+<span class="rd">&rarr; 80 AE GENERATE AC, P1 = 0x00</span>           <span class="cd">&larr; 9F27 = <u>00</u>, AAC, declined</span>     <i>[CLA 0x80]</i></pre>
+
+    <div class="col">
+      <h3>What the two runs prove between them</h3>
+      <p>
+        <strong>The block layer works on a real wire.</strong> Run one is the T=1 face
+        end to end: activation, protocol selection from the ATR, I-blocks and R-blocks,
+        sequence numbering, and card-to-reader chaining across a five-block response.
+      </p>
+      <p>
+        <strong>The class <span class="m">0x80</span> arm is load-bearing in both.</strong>
+        Every <span class="m">80 xx</span> command in either trace returns case 0 from
+        <span class="m">osim_determine_apdu_case()</span>. Without the case 0 arm,
+        upstream logs an error and drops them, and the transaction stops at GET PROCESSING
+        OPTIONS. On the Verifone run each classification was correct with
+        <span class="m">Lc</span> matching the data phase that followed: 2, 43 and 29
+        bytes.
+      </p>
+      <p>
+        <strong>The case-4 conversion is what makes run two possible.</strong> Both
+        <span class="m">61 20</span> and <span class="m">61 3E</span> are synthesized by
+        the host, not by the card. The card is on T=1 and handed the FCI over in one
+        piece; the terminal is on T=0 and expects a status word first, so the host held
+        the body, announced its length, and served the reader&#8217;s GET RESPONSE from
+        that buffer. Run one needs none of that, because whole APDUs cross the wire in
+        both directions.
+      </p>
+
+      <h4>The same two problems, met independently</h4>
+      <p>
+        The SIM-side Python tool this firmware was developed alongside relays EMV as well,
+        and hit both problems on its own. It reached the same conclusion on the ATR,
+        sending <span class="m">3B 00</span>. On class <span class="m">0x80</span> it took
+        a different shape: rather than a generic case 0 arm with a
+        <span class="m">P1</span> test, it keys on the instruction,
+        <span class="m">0xA8</span> for GET PROCESSING OPTIONS and
+        <span class="m">0xAE</span> for GENERATE AC, both of which carry command data
+        unconditionally. That is only possible because it consults a SIM instruction table
+        first, so the class <span class="m">0x80</span> commands a SIM defines
+        (<span class="m">STATUS</span>, <span class="m">FETCH</span>,
+        <span class="m">TERMINAL PROFILE</span>,
+        <span class="m">TERMINAL RESPONSE</span>) are classified before the EMV rule is
+        ever reached. Both arrive at the same behavior for the three commands measured
+        here. The C version classifies more broadly and needs the
+        <span class="m">P1</span> test to do it; the Python version classifies narrowly
+        and does not.
+      </p>
+    </div>
+  </div>
+</section>
+
+<hr class="sec">
+
+<!-- ================================================================ -->
+<section id="defects" class="sheet">
+  <div class="rail">
+    <div class="secno">&#167; 10</div>
+    <div class="cite">Root causes<br>and their tells</div>
+  </div>
+  <div class="col">
+    <h2>Three defects, each masking the next</h2>
+    <p>
+      These defects are worth considering together because none produced a useful error
+      message. Each was identified by reasoning from the expected wire behavior rather
+      than by relying on logs. The <span class="m">0x80</span> dispatch failure in
+      section 05 is the exception: it logged an error, but remained equally fatal.
+    </p>
+  </div>
+
+  <div class="wide">
+    <div class="defect">
+      <header><h3>The ATR was refused outright</h3><span class="tag">EMV Book 1 &#167;8.3</span></header>
+      <p>
+        The rewrite dropped every TA, TB and TC byte, TA3 and TB3 among them. With TB3
+        absent, the terminal takes the ISO default <span class="m">CWI = 13</span>, which
+        is outside EMV&#8217;s accepted range, and it rejects the card before exchanging a
+        block.
+      </p>
+      <dl>
+        <dt>Looked like</dt><dd>Terminal reads the whole ATR, asserts RST, repeats, then deactivates. It never reached a released reset.</dd>
+        <dt>Tell</dt><dd>The firmware had already printed <span class="m">ATR offers protocols 0x2, using T=1</span>, so every character went out correctly and the <em>content</em> was being refused.</dd>
+        <dt>Fix</dt><dd>Keep TA3 and TB3 when the ATR indicates T=1, extending the TD<sub>i</sub> chain so the T=1 link is TD2 or later.</dd>
+        <dt>Outcome</dt><dd>This is what made native T=1 work, and run one in section 09 is the result. On the Verifone it was necessary but not sufficient: with TA3 kept the terminal held the card powered with reset released, consistently, and still exchanged zero APDUs, because the chain also named T=15. That terminal needed <span class="m">--synthetic-atr</span> as well. See section 04.</dd>
+      </dl>
+    </div>
+
+    <div class="defect">
+      <header><h3>Every T=1 response was discarded in the firmware</h3><span class="tag">card_emu_ch_ready()</span></header>
+      <p>
+        The new state was added to the four places the data phase obviously touches,
+        namely <span class="m">card_set_state()</span>,
+        <span class="m">card_emu_process_rx_byte()</span>,
+        <span class="m">card_emu_tx_byte()</span> and
+        <span class="m">card_emu_have_new_uart_tx()</span>. It missed a quieter fifth
+        enumeration, the one that decides whether the host may talk to the card at all.
+      </p>
+      <dl>
+        <dt>Looked like</dt><dd>Card activates, takes the first command, forwards it, then falls silent. The host log shows the response sent.</dd>
+        <dt>Tell</dt><dd>The reader stopped exactly where it should have sent the <em>next</em> command, with nothing in the host log: a command arriving and no answer leaving.</dd>
+        <dt>Fix</dt><dd>Add <span class="m">ISO_S_IN_T1</span> to the ready list, with a comment explaining why it belongs there.</dd>
+      </dl>
+    </div>
+
+    <div class="defect">
+      <header><h3>Chunks could race the reader for the line</h3><span class="tag">half duplex</span></header>
+      <p>
+        Each arriving chunk re-enabled the transmitter, which resets USART status and
+        flips line direction on top of the block still going out. It then sent the next
+        chunk without waiting for the R-block that chaining requires. Both sides end up
+        driving a half-duplex line at once.
+      </p>
+      <dl>
+        <dt>Looked like</dt><dd>The read sequence completes, then the terminal restarts it instead of reaching GENERATE AC. Endlessly.</dd>
+        <dt>Tell</dt><dd>The same card inserted <em>directly</em> completed the transaction. That control experiment moved the fault from the terminal to the relay.</dd>
+        <dt>Fix</dt><dd>Gate transmission on <span class="m">t1_owe_reader</span>, so a chunk waits to be pulled by the reader&#8217;s R-block.</dd>
+        <dt>Outcome</dt><dd>The five-block record in section 09 is this fix working. It is kept in place by <span class="m">test_t1_response_chunks_arrive_together()</span>.</dd>
+      </dl>
+    </div>
+
+    <div class="col">
+      <h3>Why the tests stayed green through all three</h3>
+      <p>
+        The harness entered through doors the firmware never uses.
+        <span class="m">host_to_device_data()</span> enqueued straight onto the transmit
+        queue, which is the path <em>after</em> the readiness gate, so the T=1 tests
+        exercised a route that does not exist in the real dispatcher. And
+        <span class="m">test_t1_chained_response()</span> queued the second chunk only
+        <em>after</em> the reader&#8217;s R-block, one per turn, which is not how the host
+        behaves.
+      </p>
+      <p>
+        Both are closed. The harness now calls
+        <span class="m">card_emu_ch_ready()</span> and fails loudly if it is false, exactly
+        as the dispatcher checks it. And
+        <span class="m">test_t1_response_chunks_arrive_together()</span> queues an entire
+        response up front, then asserts the card stays silent after the first block until
+        the R-block arrives.
+      </p>
+      <div class="note">
+        <p>
+          One additional testing detail is worth documenting.
+          <span class="m">libcommon/include/assert.h</span> is found ahead of the system
+          header and contains <span class="m">#define assert ASSERT</span>, which
+          <strong>spins rather than aborting</strong>. A failed assertion therefore hung
+          <span class="m">make check</span> instead of failing it, twice disguising a
+          caught bug as an infinite loop. The T=1 test file avoids the name entirely and
+          uses its own <span class="m">CHECK</span> and
+          <span class="m">CHECK_EQ</span> macros, which print and set a failure flag that
+          makes <span class="m">main()</span> exit non-zero.
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<hr class="sec">
+
+<!-- ================================================================ -->
+<section id="run" class="sheet">
+  <div class="rail">
+    <div class="secno">&#167; 11</div>
+    <div class="cite">Build and operate</div>
+  </div>
+  <div class="col">
+    <h2>Building and running it</h2>
+    <p>
+      The board must run <span class="m">APP=cardem</span>. On SIMtrace2 the
+      <span class="m">trace</span> application is sniffer-only, and because
+      <span class="m">enum confNum</span> is built from the same
+      <span class="m">APPLICATION_*</span> guards that select the mode, card emulation is
+      always USB configuration 1 in a cardem build. Check with
+      <span class="m">simtrace2-list</span> before debugging anything else.
+    </p>
+<pre><i># firmware</i>
+make -C firmware BOARD=simtrace APP=cardem
+
+<i># unit tests, no board required</i>
+make -C firmware/test card_emu_t1_test &amp;&amp; ./firmware/test/card_emu_t1_test
+
+<i># flash: prebuilt/ carries an image built from a clean checkout, so the</i>
+<i># version a board reports traces back to a commit in this history</i>
+dfu-util --device 0x1d50:0x60e3 --path &lt;PATH&gt; --cfg 1 --alt 1 \
+         --reset --download prebuilt/simtrace-cardem-dfu-*.bin
+
+<i># libosmocore, from source, OUTSIDE this tree -- cloning it inside host/</i>
+<i># leaves a 44 MB repository where the build system does not expect one,</i>
+<i># and the next step is also run from host/</i>
+sudo apt install -y libtool pkg-config libtalloc-dev libsctp-dev \
+                    libmnl-dev libgnutls28-dev libusb-1.0-0-dev libpcsclite-dev
+mkdir -p ~/src &amp;&amp; cd ~/src
+git clone --depth 30 https://gitea.osmocom.org/osmocom/libosmocore.git
+cd ~/src/libosmocore &amp;&amp; autoreconf -fi
+./configure --prefix="$HOME/.local/osmo" --enable-libusb --disable-uring --disable-doxygen
+make -j"$(nproc)" &amp;&amp; make install
+
+<i># host tools</i>
+export PKG_CONFIG_PATH="$HOME/.local/osmo/lib/pkgconfig"
+cd /path/to/host &amp;&amp; autoreconf -fi &amp;&amp; ./configure &amp;&amp; make -j"$(nproc)"
+
+<i># relay an EMV card, native T=1: the card's own ATR, rewritten</i>
+LD_LIBRARY_PATH="$HOME/.local/osmo/lib" \
+  ./src/simtrace2-remsim --usb-vendor 1d50 --usb-product 60e3 \
+                         --usb-path &lt;PATH&gt; --usb-config 1 -n 0
+
+<i># same card, T=0 face: for a terminal that refuses an ATR naming T=15</i>
+LD_LIBRARY_PATH="$HOME/.local/osmo/lib" \
+  ./src/simtrace2-remsim --usb-vendor 1d50 --usb-product 60e3 \
+                         --usb-path &lt;PATH&gt; --usb-config 1 -n 0 --synthetic-atr</pre>
+    <p>
+      Re-read <span class="m">&lt;PATH&gt;</span> from
+      <span class="m">dfu-util --list</span> every time, because flashing causes a
+      re-enumeration and both the path and the device number change. In a virtual
+      machine a re-enumerating board is frequently handed to the host rather than
+      the guest, which from inside the guest is indistinguishable from a board
+      that died.
+    </p>
+    <p>
+      Building no longer dirties the working tree. It used to:
+      <span class="m">usb_strings_generated.h</span> is generated per
+      <span class="m">BOARD</span> and <span class="m">APP</span>, was tracked, and
+      so every build modified a tracked file &mdash; which then made
+      <span class="m">git-version-gen</span> stamp the <em>next</em> build
+      <span class="m">-dirty</span>, a version claiming uncommitted changes that
+      were only the build itself. Upstream does not track it either. The copy that
+      came with the tree had been generated for
+      <span class="m">BOARD=qmod</span> and named the wrong hardware.
+    </p>
+
+    <div class="note bad">
+      <p>
+        <strong>Three build issues are particularly easy to misdiagnose.</strong> The host tree
+        needs <span class="m">libosmousb</span>, which no distribution packages; 
+        Ubuntu's <span class="m">libosmocore-dev</span> ships nine
+        <span class="m">.pc</span> files and that is not among them. It exists only
+        when libosmocore is configured with <span class="m">--enable-libusb</span>,
+        so libosmocore has to come from source, and it is not optional: all four
+        binaries include <span class="m">osmocom/usb/libusb.h</span>.
+        Recent libosmocore then refuses to configure without
+        <span class="m">liburing &gt;= 0.7</span>, which is unrelated to anything
+        here; <span class="m">--disable-uring</span> avoids it without another
+        package.
+        And <span class="m">contrib/flash.py</span> downloads the Osmocom image, which
+        has no T=1 in it. Flashing that over this firmware silently removes the
+        capability and nothing in the output says so. Two guards refuse it: an
+        unparseable version, what an untagged local build reports, and
+        any version at or above this fork's <span class="m">0.9.2</span> floor,
+        which is deliberately conservative, since it refuses an upstream image
+        too should Osmocom ever reach 0.9.2.
+        <span class="m">--force-upstream</span> overrides both, if you mean it.
+      </p>
+    </div>
+
+    <h4>Options that change protocol behavior</h4>
+    <div class="tw">
+      <table>
+        <thead><tr><th>Option</th><th>Effect</th></tr></thead>
+        <tbody>
+          <tr><td class="m">-T, --card-proto</td><td><span class="m">t0</span>, <span class="m">t1</span> or <span class="m">auto</span> for the real card. Default <span class="m">auto</span>. Independent of what is presented to the terminal.</td></tr>
+          <tr><td class="m">-y, --synthetic-atr</td><td>Push <span class="m">3B 00</span> instead of the card&#8217;s ATR. Presents a T=1 card over T=0. Needed for a terminal that refuses an ATR naming T=15.</td></tr>
+          <tr><td class="m">--raw-atr</td><td>Forward the ATR untouched. Useful for comparison; expect the reader to reject it.</td></tr>
+          <tr><td class="m">-R, --auto-reinit</td><td>After N idle seconds following the last status word, replay removal, insertion, ATR and reset so the terminal starts a fresh session. <span class="m">0</span> turns it off.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h4>Reading the debug UART</h4>
+    <p>
+      Firmware trace goes to the debug UART at <span class="m">921600 8N1</span>, TTL
+      3.3 V, not over USB. Use the 2.5 mm connector (tip TX, ring RX, sleeve GND) or the
+      DEBUG header. Build with <span class="m">TRACE_LEVEL=4</span>. Level 5 enables trace
+      inside interrupt handlers and floods the line.
+    </p>
+    <div class="note">
+      <p>
+        Two log lines look alarming and are not.
+        <span class="m">-E- Invalid SIM0</span> comes from a pin definition SIMtrace2 does
+        not have, and it appears upstream too. A blinking red LED means the
+        <span class="m">cardem</span> application is running; solid LEDs mean
+        <span class="m">trace</span>.
+      </p>
+      <p>
+        Do not add <span class="m">printf</span> to
+        <span class="m">card_emu_report_status()</span>. The firmware&#8217;s minimal
+        printf puts a 512-byte buffer on the stack per call and resets the board.
+        Diagnostics belong in the status message instead.
+      </p>
+    </div>
+  </div>
+</section>
+
+<hr class="sec">
+
+<!-- ================================================================ -->
+<section id="next" class="sheet">
+  <div class="rail">
+    <div class="secno">&#167; 12</div>
+    <div class="cite">Open work</div>
+  </div>
+  <div class="col">
+    <h2>What remains unproven</h2>
+    <p>
+      Bring-up is complete for both terminal-facing configurations. The remaining work is
+      hardening and validation, ordered roughly by where the next failure is most likely
+      to appear.
+    </p>
+  </div>
+
+  <div class="wide">
+    <div class="tw">
+      <table>
+        <thead><tr><th style="width:30%">Gap</th><th>Detail</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><strong>Waiting-time extension</strong><br><span class="pill bad">unreachable</span></td>
+            <td><span class="m">t1_tx_wtx_request()</span> is implemented and unit-tested, but <span class="m">card_emu_wtime_half_expired()</span> switches only on <span class="m">ISO_S_IN_TPDU</span>, so <span class="m">ISO_S_IN_T1</span> falls through its <span class="m">default:</span> and does nothing. A card slower than the reader&#8217;s BWT would be abandoned rather than granted more time. The <span class="m">t1_owe_reader</span> flag from section 07 is exactly the waiting-on-host versus waiting-on-reader distinction this needs, so the remaining work is small.</td>
+          </tr>
+          <tr>
+            <td><strong>BWT, CWT and BGT</strong><br><span class="pill warn">borrowed</span></td>
+            <td>The block layer reuses the T=0 waiting-time counter rather than deriving T=1 timings from BWI and CWI.</td>
+          </tr>
+          <tr>
+            <td><strong>IFSC disagreement</strong><br><span class="pill warn">cosmetic</span></td>
+            <td><span class="m">t1_init()</span> is always called with <span class="m">T1_DEFAULT_IFS</span> (32), and <span class="m">st-&gt;ifsc</span> is then never read, so the 254 the host advertises in TA3 has no effect on the firmware. Harmless today: the block buffer absorbs anything a reader may legally send, and <span class="m">LEN = 0xFF</span> is rejected as reserved. The two should still agree, especially now that terminals are demonstrably acting on the advertised value.</td>
+          </tr>
+          <tr>
+            <td><strong>Reader-to-card chaining</strong><br><span class="pill warn">unit tests only</span></td>
+            <td>With IFSC advertised at 254, no ordinary EMV command needs chaining, so the reassembly path has only ever run in <span class="m">test_chained_command()</span>.</td>
+          </tr>
+          <tr>
+            <td><strong>Error recovery</strong><br><span class="pill warn">unit tests only</span></td>
+            <td>No EDC error, RESYNCH or ABORT has occurred in a real exchange.</td>
+          </tr>
+          <tr>
+            <td><strong>CRC error detection</strong><br><span class="pill warn">unit tests only</span></td>
+            <td>LRC is the ISO default and what essentially every real card selects, so the CRC branch has never run outside unit tests. It is checked against the published CRC-16/CCITT-FALSE value.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="col">
+      <div class="note">
+        <p>
+          <strong>A methodological point worth carrying forward.</strong> Several changes across this
+          work were made on plausible theories and had to be undone. What actually moved
+          things was getting a fact: decoding the reset cause, dumping the USB
+          configuration descriptors, capturing the debug UART, and inserting the card
+          directly into the terminal to see whether the relay was the variable at all.
+          Prefer obtaining a fact over trying a fix.
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer class="end sheet">
+  <div class="rail"><div class="secno">END</div></div>
+  <div class="col">
+    <p>
+      <b>SIMtrace2 T1 Research</b>, based on Osmocom&#8217;s SIMtrace2. This is not a fork
+      of the project&#8217;s direction. It is upstream plus one capability, kept close
+      enough that merging from upstream again stays cheap. Firmware sources follow
+      <span class="m">0.9.1-22-*</span> with the T=1 block layer applied on top.
+      Upstream is Osmocom&#8217;s, under the licenses stated in the individual files; the
+      T=1 additions follow the file they are in.
+    </p>
+    <p>
+      That closeness has been measured rather than assumed. Of the 158 firmware
+      sources shared with upstream, 133 are byte-identical to it; the ten that had
+      drifted were adopted wholesale, among them a DFU-runtime fix and a refactor
+      of the PIO interrupt lookup. Only <span class="m">card_emu.c</span> and
+      <span class="m">simtrace_prot.h</span> are deliberately held back, and they
+      differ from upstream <em>only</em> by the additions described here &mdash; the
+      block layer, the <span class="m">ISO_S_IN_T1</span> state, and the
+      <span class="m">CEMU_DATA_F_T1_BLOCK</span> flag. The six lines that read as
+      upstream-only in <span class="m">card_emu.c</span> are lines this work
+      replaced on purpose, one of them an implementation of a
+      <span class="m">FIXME</span> upstream left open (&sect;&nbsp;02).
+    </p>
+    <p>
+       Osmocom&#8217;s SIMtrace2 Upstream has renamed its own
+      tool to <span class="m">simtrace2-cardem-pcsc</span> and rebuilt it around
+      <span class="m">osmo_select_main()</span> with asynchronous URBs. Porting this project onto
+      that is a rewrite rather than a merge, and it is where T=1 would quietly be
+      lost, so <span class="m">simtrace2-remsim</span> keeps both its name and its
+      synchronous loop.
+    </p>
+    <p>
+      Companion to <span class="m">docs/emv-relay-verifone.md</span> in the repository,
+      which carries run two of section 09 as working notes, and to the project README,
+      which carries the build detail and the status table this document tracks.
+    </p>
+    <p style="margin-bottom:0">Salvador Mendoza</p>
+  </div>
+</footer>
+
+</div>
+
+</body>
+</html>
