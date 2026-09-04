@@ -3,7 +3,7 @@
 Osmocom's [SIMtrace2](https://osmocom.org/projects/simtrace2), extended with an
 **ISO 7816-3 T=1 block layer in the card emulation**. Upstream's `cardem`
 speaks T=0 only; this tree speaks both, and selects between them from the ATR or
-a PPS exchange.
+a PPS exchange. For more technical details: [T1 Relay Internal - Report](https://github.com/salmg/SIMtrace2-T1-Research/blob/main/docs/T1%20Relay%20Internal%20-%20Report.html)
 
 Everything else tracks upstream `0.9.1-22-gf5eead5`. Of the 158 shared firmware
 sources, 133 are byte-identical to it; the remainder have been merged.
