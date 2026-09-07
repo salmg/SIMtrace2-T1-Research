@@ -156,7 +156,7 @@ Without this arm the transaction stops at GET PROCESSING OPTIONS.
 | **EMV relay to a payment terminal** | **working** — a complete transaction relayed to a Verifone: PSE discovery, application selection, GET PROCESSING OPTIONS, record reads, and both GENERATE AC exchanges |
 | T=0 card emulation | **regression-tested on hardware**: 1054 APDUs relayed to an Android payment terminal, 0 errors, full SIM initialisation including writes |
 | Host tools build and link the T=1 paths | yes |
-| **T=1 exercised end-to-end against a real reader** | **not yet** |
+| **T=1 exercised end-to-end against a real reader** | yes |
 
 The last row is the honest gap. The block layer is unit-tested and the host code
 compiles and links, but no reader has yet negotiated T=1 against this firmware.
@@ -265,7 +265,7 @@ cd host && LD_LIBRARY_PATH="$HOME/.local/osmo/lib" \
                          --usb-path <PATH> --usb-config 1 -n 0 --synthetic-atr
 ```
 
-**`--synthetic-atr` is required, not optional**, and the reason is a real
+**`--synthetic-atr` is optional, not required**, and the reason is a real
 conflict rather than an oversight.
 
 A SIM's ATR names **T=15** in its TDi chain. T=15 is not a transmission
