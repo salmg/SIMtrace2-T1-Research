@@ -158,11 +158,14 @@ Without this arm the transaction stops at GET PROCESSING OPTIONS.
 | Host tools build and link the T=1 paths | yes |
 | **T=1 exercised end-to-end against a real reader** | yes |
 
-The last row is the honest gap. The block layer is unit-tested and the host code
-compiles and links, but no reader has yet negotiated T=1 against this firmware.
-Presenting a T=1-only ATR to one Android terminal produced no response, which
-that device also gives to every T=0 ATR — so it says nothing about T=1 either
-way.
+A real reader has negotiated T=1 against this firmware. With a card that
+offers T=1, a complete EMV transaction ran over native T=1 on the card's own
+ATR, rewritten, and one 131-byte record in it went out as five chained blocks.
+Section 09 of the [report](docs/T1%20Relay%20Internal%20-%20Report.html)
+traces that run and the Verifone run in the table above, which used a T=0
+face. Reader-to-card chaining, error recovery, IFS negotiation and the CRC
+branch have still only run in unit tests: sections 02 and 06 of the report mark
+each one, and section 12 lists the open work.
 
 ---
 
@@ -265,8 +268,13 @@ cd host && LD_LIBRARY_PATH="$HOME/.local/osmo/lib" \
                          --usb-path <PATH> --usb-config 1 -n 0 --synthetic-atr
 ```
 
-**`--synthetic-atr` is optional, not required**, and the reason is a real
-conflict rather than an oversight.
+**`--synthetic-atr` is optional, not required.** Without it the board presents
+the card's own ATR, rewritten. When that ATR leads with T=1 and the terminal
+accepts it, the transaction runs over native T=1 end to end. With the flag the
+board presents `3B 00`, a minimal T=0 ATR, whatever the card behind it speaks.
+The Verifone measured below needed it, and the reason is a real conflict rather
+than an oversight. Reach for it when a terminal powers the card and then
+exchanges nothing.
 
 A SIM's ATR names **T=15** in its TDi chain. T=15 is not a transmission
 protocol — it is the marker saying "the interface bytes after me are global
@@ -279,8 +287,9 @@ EMV Book 1 §8.3 admits **T=0 and T=1 only**. A terminal reading a TDi naming
 T=15 has grounds to reject the card outright.
 
 So the voltage classes can only be carried behind exactly the thing that gets
-you rejected. There is no ATR that suits both. `--synthetic-atr` sends `3B 00`
-— no interface bytes at all — which is the answer for EMV.
+you rejected. There is no ATR that suits both. `--synthetic-atr` sends `3B 00`,
+an ATR with no interface bytes at all, and that is the answer for a terminal
+that refuses T=15.
 
 Measured against a Verifone terminal, in order:
 
