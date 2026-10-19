@@ -332,15 +332,20 @@ python3 contrib/flash.py list
 `contrib/flash.py` downloads from `ftp.osmocom.org`. **That image has no T=1**,
 so flashing it silently removes the capability and nothing in the output says so.
 
-Two guards prevent it:
+The script refuses in one case only. A board reporting a version that does not
+parse is left alone, and that is what a build from an untagged checkout of this
+tree reports (`UNKNOWN`). The refusal message suggests `--force-upstream`, but
+the script's argument check prints its help and exits whenever that flag is
+present, so the refusal cannot be overridden.
 
-1. A board reporting an unparseable version — which is what an untagged local
-   build reports — is refused.
-2. A board reporting **≥ 0.9.2**, this fork's version floor, is refused
-   regardless of version arithmetic. This is deliberately conservative: if
-   upstream ever reaches 0.9.2, their image is refused too.
+Every other board is compared with the download and flashed when the download
+is newer. There is no version floor. The prebuilt image reports `0.9.2.9-4194`,
+so a board running it is left alone only while Osmocom's release is not newer
+than that, and a board on an older Osmocom release is flashed with the image
+that has no T=1.
 
-`--force-upstream` overrides both, having thought about it.
+To put T=1 on a board, use `dfu-util` with this repository's image, as above.
+Run `flash.py` only with `list`, to read what a board reports.
 
 Recovery from a bad flash is the board's physical DFU button, which no firmware
 change can affect.
